@@ -138,6 +138,15 @@ def request_options(context):
     }
 
 
+def jev_available():
+    """Deployment mode: Jev is optional — when no key is configured the
+    middleware degrades to plain presentation instead of failing turns."""
+    from src.credentials import current_credentials
+    if current_credentials.get() is not None:
+        return True
+    return bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
+
+
 def parse_response(response):
     if not response.is_success:
         raise ValueError(
@@ -219,6 +228,8 @@ class JevVisualizationMiddleware(AgentMiddleware):
         if pending is None:
             return None
         turn, context = pending
+        if not jev_available():
+            return {"visualization_turn": turn, "visualization_decision": None}
         return {"visualization_turn": turn, "visualization_decision": route(context)}
 
     async def abefore_agent(self, state, runtime):
@@ -226,6 +237,8 @@ class JevVisualizationMiddleware(AgentMiddleware):
         if pending is None:
             return None
         turn, context = pending
+        if not jev_available():
+            return {"visualization_turn": turn, "visualization_decision": None}
         return {
             "visualization_turn": turn,
             "visualization_decision": await aroute(context),

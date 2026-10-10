@@ -21,7 +21,11 @@ MAX_TOKENS = 64000
 
 def build_model(*, allow_unconfigured: bool = False) -> BaseChatModel:
     model_name = os.environ.get("LLM_MODEL", DEFAULT_MODEL).strip()
-    is_openai = model_name == "chat-latest" or model_name.startswith("gpt-")
+    byo = bool(os.environ.get("OPENAI_BASE_URL", "").strip())
+    is_openai = (
+        model_name == "chat-latest" or model_name.startswith("gpt-")
+        or (byo and not model_name.startswith("claude-"))
+    )
     if not is_openai and not model_name.startswith("claude-"):
         raise ValueError(
             "LLM_MODEL must name a supported provider: claude-* (Anthropic) "
@@ -71,9 +75,10 @@ def request_model(fallback):
     # SDK None defaults inherit server organization/project settings. Explicit
     # clients with empty scopes and isolated transports prevent that inheritance,
     # including server HTTP(S)_PROXY and OPENAI_PROXY settings.
+    import os
     options = {
         "api_key": credentials.openai,
-        "base_url": "https://api.openai.com/v1",
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "organization": "",
         "project": "",
     }

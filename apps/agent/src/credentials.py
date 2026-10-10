@@ -48,7 +48,12 @@ def parse_credentials(headers):
 def server_credentials_available():
     model = os.environ.get('LLM_MODEL', 'chat-latest').strip()
     key = 'ANTHROPIC_API_KEY' if model.startswith('claude-') else 'OPENAI_API_KEY'
-    return bool(os.environ.get(key, '').strip() and os.environ.get('TYPESAFE_API_KEY', '').strip())
+    has_model = bool(os.environ.get(key, '').strip())
+    # Deployment mode: Jev (visualization router) is optional — our stack
+    # routes locally. Require it only when JEV_REQUIRED=1.
+    if os.environ.get('JEV_REQUIRED', '').strip() == '1':
+        return has_model and bool(os.environ.get('TYPESAFE_API_KEY', '').strip())
+    return has_model
 
 
 class CredentialsMiddleware:
