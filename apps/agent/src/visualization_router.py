@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from typing import NotRequired
 
 import httpx
@@ -147,6 +148,66 @@ def jev_available():
     return bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
 
 
+# ---- local router (MWP deployment): oMLX classification, no cloud ----
+
+def _omlx_cfg():
+    return (
+        os.environ.get("OMLX_URL", "http://100.81.213.106:3123/v1"),
+        os.environ.get("OMLX_MODEL", "Qwen3.8-Flash-Next-4bit"),
+        os.environ.get("OMLX_API_KEY", "").strip(),
+    )
+
+
+def local_router_active():
+    return os.environ.get("LOCAL_ROUTER", "").strip() == "1" and bool(
+        os.environ.get("OMLX_API_KEY", "").strip())
+
+
+_LABELS = list(VISUALIZATIONS.keys())
+
+ROUTER_SYSTEM = (
+    "You are a visualization router. Read the user's latest request and "
+    "choose EXACTLY ONE label from this menu:\n"
+    + "\n".join(f"- {k}: {v}" for k, v in VISUALIZATIONS.items())
+    + "\n\nReply with the label alone, nothing else. When unsure, reply: text"
+)
+
+
+def local_route(context):
+    """Constrained classification on the local oMLX lane.
+    Text-default on any miss. Returns the same decision dict shape as
+    decision_from_response."""
+    url, model, key = _omlx_cfg()
+    conv = context if isinstance(context, str) else json.dumps(context)[:4000]
+    try:
+        with httpx.Client(timeout=60, trust_env=False) as client:
+            r = client.post(
+                f"{url}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": ROUTER_SYSTEM},
+                        {"role": "user", "content": conv},
+                    ],
+                    "max_tokens": 200,
+                    "temperature": 0,
+                },
+            )
+        raw = r.json()
+        text = raw["choices"][0]["message"]["content"] or ""
+    except Exception:
+        return {"renderer": "text", "visualization": "text",
+                "confidence": 0.0, "source": "omlx-local-error"}
+    for label in _LABELS:
+        if re.search(rf"(?<![a-z_]){re.escape(label)}(?![a-z_])", text.lower()):
+            renderer = {"text": "text", "table": "a2ui"}.get(label, "open_generative_ui")
+            return {"renderer": renderer, "visualization": label,
+                    "confidence": 0.9, "source": "omlx-local"}
+    return {"renderer": "text", "visualization": "text",
+            "confidence": 0.0, "source": "omlx-local-default"}
+
+
 def parse_response(response):
     if not response.is_success:
         raise ValueError(
@@ -229,6 +290,9 @@ class JevVisualizationMiddleware(AgentMiddleware):
             return None
         turn, context = pending
         if not jev_available():
+            if local_router_active():
+                return {"visualization_turn": turn,
+                        "visualization_decision": local_route(context)}
             return {"visualization_turn": turn, "visualization_decision": None}
         return {"visualization_turn": turn, "visualization_decision": route(context)}
 
@@ -238,6 +302,9 @@ class JevVisualizationMiddleware(AgentMiddleware):
             return None
         turn, context = pending
         if not jev_available():
+            if local_router_active():
+                return {"visualization_turn": turn,
+                        "visualization_decision": local_route(context)}
             return {"visualization_turn": turn, "visualization_decision": None}
         return {
             "visualization_turn": turn,

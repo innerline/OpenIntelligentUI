@@ -104,6 +104,10 @@ def request_model(fallback):
         client=sync_client.chat.completions,
         root_async_client=async_client,
         async_client=async_client.chat.completions,
+        # GLM (z.ai) repeats tool_call IDs across stream deltas, which breaks
+        # CopilotKit's TOOL_CALL_START/END pairing. "tool_calling" streams
+        # text turns normally and runs tool-call turns non-streaming.
+        disable_streaming=True,  # S1: GLM tool-call stream breaks CK event pairing; restore via shim later
     )
     # LangChain's metadata field separately inherits organization environment
     # values even when prebuilt SDK clients are supplied. Clear the inert field.
