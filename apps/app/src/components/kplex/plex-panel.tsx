@@ -17,6 +17,7 @@ type WalkPayload = {
   parents: PlexNode[];
   children: PlexNode[];
   friends: PlexNode[];
+  challengers: PlexNode[];
 };
 type SearchItem = { title: string; path: string };
 
@@ -202,6 +203,17 @@ export function PlexPanel() {
               <span className="plex-center-path">{walk.path}</span>
               <span className="plex-center-cta">💬 ask Honey about this</span>
             </button>
+            <div className="plex-zone plex-right">
+              <span className="plex-zone-label">CHALLENGERS · RIGHT</span>
+              <div className="plex-node-col">
+                {(walk.challengers?.length
+                  ? walk.challengers
+                  : [{ title: "none", path: null }]
+                ).map((n, i) => (
+                  <PlexNodeButton key={i} node={n} onWalk={load} zone="challenger" />
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="plex-zone plex-down">

@@ -18,7 +18,7 @@ import path from "path";
 export const dynamic = "force-dynamic";
 
 const VAULT = process.env.MWP_VAULT || "/Users/silverhawk/GitHub/MWP";
-const PLEX_FIELDS = new Set(["parents", "children", "friends", "up", "down"]);
+const PLEX_FIELDS = new Set(["parents", "children", "friends", "challengers", "challenger", "up", "down"]);
 
 type PlexNode = { title: string; path: string | null };
 type WalkPayload = {
@@ -27,6 +27,7 @@ type WalkPayload = {
   parents: PlexNode[];
   children: PlexNode[];
   friends: PlexNode[];
+  challengers: PlexNode[];
 };
 type SearchItem = { title: string; path: string };
 
@@ -119,12 +120,17 @@ function walk(noteRel: string): WalkPayload | null {
   const rels = fmRelations(raw);
   const map = (list: string[] | undefined) =>
     (list ?? []).map(resolveRef).filter((n) => n.path !== null || n.title);
+  const challengers = [
+    ...(rels.challengers ?? []),
+    ...(rels.challenger ?? []),
+  ];
   return {
     path: full.slice(VAULT.length + 1),
     title: noteTitle(full, raw),
     parents: map(rels.parents),
     children: map(rels.children),
     friends: map(rels.friends),
+    challengers: challengers.length ? map(challengers) : [],
   };
 }
 

@@ -100,7 +100,7 @@
 
 .plex-mid {
   display: grid;
-  grid-template-columns: minmax(70px, 1fr) 2.2fr;
+  grid-template-columns: minmax(70px, 1fr) 2.2fr minmax(70px, 1fr);
   gap: 6px;
   align-items: stretch;
 }
