@@ -203,3 +203,24 @@
   overflow-anchor: none;
   padding: 0 4px;
 }
+
+/* ---- dashboard panel (beside the chat) ---- */
+.ui-shell { display: flex; min-height: 100dvh; }
+.chat-main { flex: 1; min-width: 0; }
+.dash { width: 340px; flex-shrink: 0; border-left: 1px solid rgba(255,255,255,.09); padding: 14px 14px 20px; overflow-y: auto; background: rgba(255,255,255,.015); }
+.dash h3 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .6; margin: 16px 0 6px; }
+.dash-count { opacity: .5; font-weight: 400; }
+.dash-list { display: flex; flex-direction: column; gap: 4px; }
+.dash-item { font-size: 12.5px; line-height: 1.35; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.05); }
+.dash-kind { display: inline-block; font-size: 9.5px; padding: 1px 5px; border-radius: 6px; margin-right: 6px; vertical-align: 1px; }
+.k-action .dash-kind { background: #12351c; color: #3fb950; }
+.k-pick .dash-kind { background: #1f3a5f; color: #58a6ff; }
+.k-parked .dash-kind { background: #21262d; color: #8b949e; }
+.k-run .dash-kind { background: #1f3a5f; color: #58a6ff; }
+.k-wait .dash-kind { background: #3f2a12; color: #e3b341; }
+.k-done .dash-kind { background: #21262d; color: #8b949e; }
+.dash-text { word-break: break-word; }
+.dash-dim { opacity: .55; font-size: 11px; }
+.dash-err { color: #f85149; font-size: 12px; }
+.dash-stamp { margin-top: 14px; }
+@media (max-width: 900px) { .ui-shell { flex-direction: column; } .dash { width: auto; border-left: none; border-top: 1px solid rgba(255,255,255,.09); max-height: 40dvh; } }

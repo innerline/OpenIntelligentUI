@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ProviderKeysDialog } from "@/components/chat/provider-keys-dialog";
 import { useProviderKeys } from "@/components/chat/provider-keys";
 import { KeyGatedChatView } from "@/components/chat/key-gated-chat-view";
+import { DashboardPanel } from "@/components/dashboard/dashboard-panel";
 import Image from "next/image";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
 import { AnswerMarkdown } from "@/components/chat/answer-markdown";
@@ -81,7 +82,7 @@ export default function HomePage() {
         Skip to chat
       </a>
       <header className="chat-header">
-        <span className="chat-name">Open Intelligent UI</span>
+        <span className="chat-name">Honey</span>
         <nav aria-label="Main navigation">
           <button type="button" onClick={newChat} disabled={agent.isRunning || retrying}>
             New chat
@@ -113,7 +114,7 @@ export default function HomePage() {
         </nav>
       </header>
       {keysOpen && <ProviderKeysDialog onClose={() => setKeysOpen(false)} disabled={agent.isRunning || retrying} />}
-      <main id="main-content" className="chat-main">
+      <div className="ui-shell"><main id="main-content" className="chat-main">
         {error && (
           <div className="chat-error" role="alert">
             <p>{error}</p>
@@ -146,7 +147,7 @@ export default function HomePage() {
             }}
           />
         </div>
-      </main>
+      </main><DashboardPanel /></div>
     </div>
   );
 }
