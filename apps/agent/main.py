@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from copilotkit import CopilotKitMiddleware
 from ag_ui_langgraph import add_langgraph_fastapi_endpoint
+from ag_ui.core import EventType
 from deepagents import create_deep_agent
 
 from src.anthropic_compat import ConsecutiveSystemMessagesMiddleware
@@ -53,6 +54,41 @@ app = FastAPI()
 app.add_middleware(CredentialsMiddleware)
 
 
+class DedupToolCallAgent(CredentialScopedAgent):
+    """GLM/langgraph double-emit guard: the framework can emit the same
+    tool-call sequence twice per run; the @ag-ui client treats a second
+    TOOL_CALL_START for an open id as fatal. Drop duplicates at dispatch."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._open_tool_calls = set()
+
+    def _dispatch_event(self, event):
+        t = getattr(event, "type", None)
+        try:
+            with open("/tmp/agent-events.log", "a") as f:
+                f.write(f"{t} {getattr(event,'tool_call_id',getattr(event,'message_id',''))} "
+                        f"{getattr(event,'tool_call_name','')} {str(getattr(event,'delta',''))[:60]}\n")
+        except Exception:
+            pass
+        if t == EventType.RUN_STARTED:
+            self._open_tool_calls.clear()
+        elif t == EventType.TOOL_CALL_START:
+            tcid = getattr(event, "tool_call_id", None)
+            if tcid in self._open_tool_calls:
+                return None
+            self._open_tool_calls.add(tcid)
+        elif t == EventType.TOOL_CALL_ARGS:
+            if getattr(event, "tool_call_id", None) not in self._open_tool_calls:
+                return None
+        elif t == EventType.TOOL_CALL_END:
+            tcid = getattr(event, "tool_call_id", None)
+            if tcid not in self._open_tool_calls:
+                return None
+            self._open_tool_calls.discard(tcid)
+        return super()._dispatch_event(event)
+
+
 @app.post("/credentials/validate")
 async def validate_provider_credentials():
     credentials = current_credentials.get()
@@ -68,9 +104,9 @@ def health():
 
 add_langgraph_fastapi_endpoint(
     app=app,
-    agent=CredentialScopedAgent(
-        name="sample_agent",
-        description="Open Generative UI by CopilotKit — answers you can interact with",
+    agent=DedupToolCallAgent(
+        name="honey",
+        description="Honey — answers you can interact with",
         graph=agent,
     ),
     path="/",
