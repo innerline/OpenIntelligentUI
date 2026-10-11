@@ -107,7 +107,7 @@ def request_model(fallback):
         # GLM (z.ai) repeats tool_call IDs across stream deltas, which breaks
         # CopilotKit's TOOL_CALL_START/END pairing. "tool_calling" streams
         # text turns normally and runs tool-call turns non-streaming.
-        disable_streaming=True,  # S1: GLM tool-call stream breaks CK event pairing; restore via shim later
+        # streaming restored 10-11: glm-shim (:8125) normalizes tool-call deltas
     )
     # LangChain's metadata field separately inherits organization environment
     # values even when prebuilt SDK clients are supplied. Clear the inert field.
