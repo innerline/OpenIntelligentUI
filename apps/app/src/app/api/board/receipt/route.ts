@@ -34,7 +34,7 @@ export async function GET(req: Request) {
     try {
       const out = execFileSync(
         "git",
-        ["-C", VAULT, "show", "--stat", "--format=fuller", "--", commit],
+        ["-C", VAULT, "show", "--stat", "--format=fuller", commit],
         { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 },
       );
       return text(out || "(empty commit)");

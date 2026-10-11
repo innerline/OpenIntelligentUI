@@ -48,6 +48,12 @@ const receiptUrl = (r: RunItem["receipt"]) =>
 
 const fileUrl = (p: string) => `/api/board/receipt?file=${encodeURIComponent(p)}`;
 
+// The kind chip already carries the prefix; don't say REVIEW twice.
+const displayText = (a: NeedItem): string =>
+  a.kind === "review" || a.kind === "pick"
+    ? a.text.replace(/^(REVIEW|DECIDE|PICK)[:\s—-]*/i, "").trim() || a.text
+    : a.text;
+
 function rel(iso: string): string {
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
   if (s < 60) return "now";
@@ -195,7 +201,7 @@ export function DashboardPanel() {
               title={a.cardPath || "kanban/OWNER-ACTIONS.md"}
             >
               <span className="dash-kind">{kindLabel[a.kind] || "NEEDS YOU"}</span>
-              <span className="dash-text">{a.text}</span>
+              <span className="dash-text">{displayText(a)}</span>
             </a>
           ))}
         </div>
