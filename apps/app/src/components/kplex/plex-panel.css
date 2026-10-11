@@ -1,0 +1,149 @@
+/* k-plex panel — the walk grammar: parents above, friends left,
+   the note center, children below. Styled to sit with the dashboard. */
+
+.plex-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.plex-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.plex-follow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  opacity: 0.8;
+  cursor: pointer;
+}
+
+.plex-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.plex-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.plex-results button {
+  text-align: left;
+  font-size: 11px;
+  padding: 3px 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.plex-results button:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.plex-walk {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plex-zone-label {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+  margin-bottom: 3px;
+}
+
+.plex-node-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+}
+
+.plex-node-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plex-node {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.plex-node:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.plex-dangling {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.plex-mid {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) 2.2fr;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.plex-center {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1.5px solid currentColor;
+  cursor: pointer;
+  text-align: left;
+}
+
+.plex-center-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.plex-center-path {
+  font-size: 10px;
+  opacity: 0.6;
+  word-break: break-all;
+}
+
+.plex-center-cta {
+  font-size: 10px;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+
+.plex-busy {
+  animation: plex-pulse 1s ease-in-out infinite;
+}
+
+.plex-empty {
+  font-size: 10px;
+  opacity: 0.4;
+}
+
+@keyframes plex-pulse {
+  50% {
+    opacity: 0.6;
+  }
+}

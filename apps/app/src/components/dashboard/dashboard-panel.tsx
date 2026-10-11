@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PlexPanel } from "@/components/kplex/plex-panel";
 
 // k-plex sidebar — three outcomes, not a kanban wall (owner ruling
 // 2026-10-11: the old board was no good; redesign for the sidebar form).
@@ -234,6 +235,7 @@ export function DashboardPanel() {
       </section>
 
       <p className="dash-dim dash-foot">live from the vault · no daemon · every run opens its receipt</p>
+      <PlexPanel />
     </aside>
   );
 }
