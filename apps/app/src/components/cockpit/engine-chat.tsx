@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CopilotChat, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
+import { uuid } from "@/lib/uuid";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
 import { AnswerMarkdown } from "@/components/chat/answer-markdown";
 import { useEngineStatuses } from "./engine-status";
@@ -55,7 +56,7 @@ export function EngineChat({
     const url = new URL(window.location.href);
     url.searchParams.delete("q");
     window.history.replaceState({}, "", url);
-    agent.addMessage({ id: crypto.randomUUID(), role: "user", content: q });
+    agent.addMessage({ id: uuid(), role: "user", content: q });
     copilotkit.runAgent({ agent }).catch(() =>
       setError("The engine could not be reached. Check the adapter, then retry."),
     );

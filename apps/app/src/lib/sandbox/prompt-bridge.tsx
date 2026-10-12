@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
+import { uuid } from "@/lib/uuid";
 import {
   SEND_PROMPT_EVENT,
   sendPromptParameters,
@@ -86,7 +87,7 @@ export function OpenGenUIPromptBridge() {
             },
           });
           a.addMessage({
-            id: crypto.randomUUID(),
+            id: uuid(),
             content: accepted.text,
             role: "user",
           });
