@@ -17,7 +17,7 @@ export function readVaultFile(
 ): VaultFileResult {
   if (!file) return { ok: false, status: 400, message: "pass ?file=<vault path>" };
   const ROOT = path.resolve(
-    rootOverride ?? process.env.MWP_VAULT || "/Users/silverhawk/GitHub/MWP",
+    rootOverride ?? (process.env.MWP_VAULT || "/Users/silverhawk/GitHub/MWP"),
   );
   const resolved = path.resolve(ROOT, file);
   if (
