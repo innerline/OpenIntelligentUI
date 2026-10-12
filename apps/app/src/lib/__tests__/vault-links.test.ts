@@ -3,7 +3,8 @@ import { doorUrl, receiptUrl } from "@/lib/vault-links";
 
 // The click-through doors: since 2026-10-12 every vault-file link the
 // cockpit renders stays SAME-ORIGIN — /vault for MWP files, the receipt
-// route for commits and the Personal vault. No :8135 anywhere.
+// route for commits and the Personal vault. The old keyed door is no
+// longer linked from anywhere in this app.
 
 describe("doorUrl", () => {
   it("links into the app's own /vault viewer", () => {
