@@ -4,22 +4,25 @@ import path from "path";
 import { listKanbanCards, listMyPkaTasks } from "@/lib/kanban";
 import type { KanbanCard, KanbanColumn } from "@/lib/kanban";
 
-// Larry's tasks — a pure read of the PERSONAL vault's myPKA task system.
+// Larry's tasks — a pure read of the myPKA task system, from the LOCAL
+// MIRROR (agentic-stack/runtime/larry-tasks-mirror), synced every 60s by
+// com.mwp.larry-tasks-sync. WHY NOT the vault directly: the iCloud
+// (File Provider) path hangs forever under the launchd-spawned server
+// while answering in ~44ms shell-spawned (same build — receipt
+// 2026-10-12). Obsidian stays the only edit surface; this is read-only.
 // Larry ≠ Honey (owner ruling, weeks standing): his board is not the MWP
-// kanban. Sources, per Personal `Kanban/PROTOCOL.md`:
+// kanban. Mirror sources, per Personal `Kanban/PROTOCOL.md`:
 //   - `Team Knowledge/tasks/` — the SSOT task files; lifecycle is the
 //     folder (open → triage, in-progress → active, blocked → waiting,
 //     done → done, cancelled → cancelled).
 //   - `Kanban/Cards/` — the visual board cards (`status:` frontmatter).
 //   - `Kanban/*.md` root — retired/finished cards still carrying a status.
-// Read-only: single-user tailnet app serving the owner his own data.
-// Cards are moved in Obsidian, never through this app.
 
 export const dynamic = "force-dynamic";
 
 const PERSONAL =
-  process.env.PERSONAL_VAULT ||
-  "/Users/silverhawk/Library/Mobile Documents/iCloud~md~obsidian/Documents/Personal";
+  process.env.LARRY_TASKS_MIRROR ||
+  "/Users/silverhawk/GitHub/agentic-stack/runtime/larry-tasks-mirror";
 
 // Larry's board vocabulary (PROTOCOL.md mapping) — `block` on a root card
 // means "awaiting a Brian gate", which renders in his `waiting` column.
