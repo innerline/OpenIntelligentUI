@@ -23,12 +23,14 @@ export function EngineChat({
   endpoint,
   welcome,
   placeholder,
+  notice,
 }: {
   agentId: "honey" | "larry";
   title: string;
   endpoint: string;
   welcome: string;
   placeholder: string;
+  notice?: string;
 }) {
   const { agent } = useAgent({ agentId });
   const { copilotkit } = useCopilotKit();
@@ -68,6 +70,12 @@ export function EngineChat({
         <h1>{title}</h1>
         <span className="cockpit-chat-sub">{endpoint}</span>
       </div>
+      {notice && (
+        <div className="cockpit-chat-banner warn" role="note">
+          <span className="dash-dot dot-off" aria-hidden />
+          {notice}
+        </div>
+      )}
       {status && !status.ok && (
         <div className="cockpit-chat-banner warn" role="status">
           <span className="dash-dot dot-off" aria-hidden />
