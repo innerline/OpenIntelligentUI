@@ -1,0 +1,82 @@
+/* /vault — the cockpit's own read-only vault viewer (2026-10-12, the
+ * self-contained front door). Markdown typography itself comes from the
+ * shared CopilotKit v2 stylesheet the whole app loads in its root
+ * layout; this file is only the page shell around it. */
+.vault-page {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-primary);
+  color: var(--text-primary);
+}
+.vault-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+  flex-shrink: 0;
+}
+.vault-back {
+  font-size: 12px;
+  text-decoration: none;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.vault-back:hover {
+  color: var(--text-primary);
+}
+.vault-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.vault-mode {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+.vault-body {
+  width: min(100%, 860px);
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+.vault-canvas {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-secondary);
+}
+.vault-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid rgba(227, 179, 65, 0.4);
+  border-radius: 10px;
+  background: var(--surface-secondary);
+}
+.vault-error b {
+  font-size: 14px;
+}
+.vault-error code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  opacity: 0.8;
+}
+.vault-error p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.75;
+}

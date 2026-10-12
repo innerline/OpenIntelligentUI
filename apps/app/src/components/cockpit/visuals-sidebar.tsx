@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { PlexPanel } from "@/components/kplex/plex-panel";
+import { doorUrl } from "@/lib/vault-links";
 import "./cockpit.css";
 
 // Visuals as a large right sidebar (owner directive 2026-10-12): the
@@ -32,8 +33,8 @@ const clampWidth = (w: number) =>
   Math.round(Math.min(Math.max(w, MIN_W), Math.min(MAX_W, window.innerWidth * 0.7)));
 
 // The vault's Excalidraw diagram sources — carried over from the old
-// Visuals tab; link-outs open read-only through the receipt door, editing
-// stays in Obsidian where the files are canonical.
+// Visuals tab; link-outs open read-only in the cockpit's /vault viewer,
+// editing stays in Obsidian where the files are canonical.
 const DIAGRAM_SOURCES = [
   { title: "The Big Vision", path: "Vision/The Big Vision.excalidraw.md" },
   { title: "How work flows", path: "Vision/Platform Map/How work flows.excalidraw.md" },
@@ -202,7 +203,7 @@ export function VisualsSidebar() {
           {DIAGRAM_SOURCES.map((d) => (
             <a
               key={d.path}
-              href={`/api/board/receipt?file=${encodeURIComponent(d.path)}`}
+              href={doorUrl(d.path)}
               target="_blank"
               rel="noopener"
               title={d.path}

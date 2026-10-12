@@ -7,7 +7,8 @@ import "./cockpit.css";
 // Boards tab — the MWP vault kanban, mirrored (owner directive
 // 2026-10-12: "the board is like the Kanban on MWP vault"). Columns are
 // the statuses from kanban/STATUSES.md, cards are kanban/*.md
-// (title/status/tags), every card clicks through the vault door.
+// (title/status/tags), every card clicks through the cockpit's own
+// /vault viewer.
 // The board's older instruments stay, demoted below the columns: the
 // pulse strip, OWNER-ACTIONS needs, and run history with receipts —
 // same /api/board read (a pure vault read, no daemon).

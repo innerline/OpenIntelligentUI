@@ -8,7 +8,7 @@ import "./cockpit.css";
 // the standalone Tasks tab goes away, each chat gets its own tasks).
 // Two REAL sources, one component:
 //   - honey: /api/board's kanban mirror — the MWP vault kanban. Cards
-//     click through the vault door (http://…:8135/?file=kanban/<slug>).
+//     click through the cockpit's /vault viewer (/?file=kanban/<slug>).
 //   - larry: /api/larry-tasks — the Personal vault myPKA task system
 //     (Larry ≠ Honey: his board, his vault, read-only). Cards open via
 //     the app's receipt route scoped to the Personal vault.

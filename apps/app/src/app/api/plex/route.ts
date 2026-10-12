@@ -8,7 +8,7 @@ import path from "path";
 // obsidian"; "agent can create visuals with their text … in k-plex format,
 // I can engage it in k-plex."
 //
-// A pure read of the MWP vault, ported from the proven :8135 machinery
+// A pure read of the MWP vault, ported from the vault door's proven machinery
 // (agentic-stack honeyui/server.py plex_note — browser-verified live
 // 2026-10-11). No daemon, no store: runs only when the panel asks.
 //
