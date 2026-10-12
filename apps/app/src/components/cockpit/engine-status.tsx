@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 // Engine status for the cockpit — the Honey (:8126) / Larry (:8127) AG-UI
 // adapters, probed server-side by /api/engine-status because they bind to
@@ -34,8 +34,14 @@ export function EngineStatusProvider({ children }: { children: React.ReactNode }
     };
   }, []);
 
+  // Re-render the whole cockpit only when a status actually CHANGED —
+  // a fresh-but-identical object every 30s was re-rendering every consumer
+  // mid-typing, which Safari punishes by killing dictation composition
+  // (owner: "types ~20 characters then resets", 2026-10-12).
+  const value = useMemo(() => statuses, [statuses?.honey.ok, statuses?.honey.detail, statuses?.larry.ok, statuses?.larry.detail]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
-    <EngineStatusContext.Provider value={statuses}>{children}</EngineStatusContext.Provider>
+    <EngineStatusContext.Provider value={value}>{children}</EngineStatusContext.Provider>
   );
 }
 
