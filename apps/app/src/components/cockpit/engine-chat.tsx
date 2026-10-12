@@ -57,7 +57,7 @@ export function EngineChat({
     url.searchParams.delete("q");
     window.history.replaceState({}, "", url);
     agent.addMessage({ id: uuid(), role: "user", content: q });
-    copilotkit.runAgent({ agent }).catch(() =>
+    agent.runAgent().catch(() =>
       setError("The engine could not be reached. Check the adapter, then retry."),
     );
   }, [agent, copilotkit]);
