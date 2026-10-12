@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { PlexPanel } from "@/components/kplex/plex-panel";
 import { doorUrl } from "@/lib/vault-links";
@@ -59,6 +59,30 @@ function readOpen(): boolean {
   }
 }
 
+// Committed sidebar width lives in the same store (same rules as `open`):
+// read through useSyncExternalStore so it applies after hydration — never
+// during SSR render — and same-tab writes notify via the synthetic
+// `storage` event. null = no stored width, CSS default applies.
+function readWidth(): number | null {
+  try {
+    const w = Number(window.localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(w) && w >= MIN_W ? w : null;
+  } catch {
+    /* private-mode Safari — CSS default width applies */
+    return null;
+  }
+}
+
+function persistWidth(w: number | null) {
+  try {
+    if (w === null) window.localStorage.removeItem(WIDTH_KEY);
+    else window.localStorage.setItem(WIDTH_KEY, String(w));
+  } catch {
+    /* private-mode Safari — width holds for this visit */
+  }
+  window.dispatchEvent(new Event("storage"));
+}
+
 export function VisualsSidebar() {
   const pathname = usePathname();
   const docked =
@@ -66,19 +90,8 @@ export function VisualsSidebar() {
     pathname === "/cockpit/honey" ||
     pathname === "/cockpit/larry";
   const open = useSyncExternalStore(subscribe, readOpen, () => true);
+  const width = useSyncExternalStore(subscribe, readWidth, () => null);
   const asideRef = useRef<HTMLElement>(null);
-  const [width, setWidth] = useState<number | null>(null);
-
-  // Committed width loads once after mount (never during SSR render), so
-  // server and client markup match.
-  useEffect(() => {
-    try {
-      const w = Number(window.localStorage.getItem(WIDTH_KEY));
-      if (Number.isFinite(w) && w >= MIN_W) setWidth(w);
-    } catch {
-      /* private-mode Safari — CSS default width applies */
-    }
-  }, []);
 
   const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -98,24 +111,14 @@ export function VisualsSidebar() {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       const w = clampWidth(startW + (startX - ev.clientX));
-      setWidth(w);
-      try {
-        window.localStorage.setItem(WIDTH_KEY, String(w));
-      } catch {
-        /* private-mode Safari — width holds for this visit */
-      }
+      persistWidth(w);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
 
   const resetWidth = () => {
-    setWidth(null);
-    try {
-      window.localStorage.removeItem(WIDTH_KEY);
-    } catch {
-      /* private-mode Safari */
-    }
+    persistWidth(null);
     if (asideRef.current) {
       asideRef.current.style.flex = "";
       asideRef.current.style.width = "";
