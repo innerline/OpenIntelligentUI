@@ -1,0 +1,317 @@
+/* Cockpit — the five-surface shell (Honey / Larry / Boards / Visuals /
+   Tasks). Token pattern mirrors the k-plex sidebar: light defaults with
+   html.dark overrides, so both themes stay readable. */
+
+.cockpit-app {
+  --ck-bg: rgba(11, 18, 26, 0.025);
+  --ck-border: rgba(9, 14, 20, 0.12);
+  --ck-row: rgba(9, 14, 20, 0.035);
+  --ck-row-border: rgba(9, 14, 20, 0.07);
+  --ck-row-hover: rgba(9, 14, 20, 0.07);
+  --ck-accent: #4c53c9;
+  --ck-accent-border: rgba(76, 83, 201, 0.3);
+  --ck-accent-bg: rgba(76, 83, 201, 0.06);
+  --ck-accent-bg-hover: rgba(76, 83, 201, 0.13);
+  --ck-dim: rgba(9, 14, 20, 0.55);
+  --ck-warn: #9a6b00;
+  --ck-off: #8b949e;
+  --ck-ok: #1b936f;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-primary);
+  color: var(--text-primary);
+}
+
+html.dark .cockpit-app {
+  --ck-bg: rgba(255, 255, 255, 0.015);
+  --ck-border: rgba(255, 255, 255, 0.09);
+  --ck-row: rgba(255, 255, 255, 0.04);
+  --ck-row-border: rgba(255, 255, 255, 0.05);
+  --ck-row-hover: rgba(255, 255, 255, 0.07);
+  --ck-accent: #bec2ff;
+  --ck-accent-border: rgba(190, 194, 255, 0.25);
+  --ck-accent-bg: rgba(190, 194, 255, 0.06);
+  --ck-accent-bg-hover: rgba(190, 194, 255, 0.14);
+  --ck-dim: rgba(255, 255, 255, 0.55);
+  --ck-warn: #e3b341;
+  --ck-off: #8b949e;
+  --ck-ok: #3fb950;
+}
+
+.cockpit-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  height: 56px;
+  border-bottom: 1px solid var(--ck-border);
+  background: var(--ck-bg);
+}
+
+.cockpit-brand {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.cockpit-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.cockpit-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.cockpit-tab:hover {
+  opacity: 1;
+  background: var(--ck-row-hover);
+}
+
+.cockpit-tab[aria-current="page"] {
+  opacity: 1;
+  border-color: var(--ck-accent-border);
+  background: var(--ck-accent-bg);
+  color: var(--ck-accent);
+}
+
+.cockpit-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cockpit-tab-dot.ok { background: var(--ck-ok); box-shadow: 0 0 5px rgba(27, 147, 111, 0.5); }
+.cockpit-tab-dot.off { background: var(--ck-off); }
+.cockpit-tab-dot.unknown { background: var(--ck-off); opacity: 0.4; }
+
+.cockpit-home {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.6;
+  text-decoration: none;
+  color: inherit;
+}
+.cockpit-home:hover { opacity: 1; }
+
+.cockpit-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- chat stage (Honey / Larry) --- */
+
+.cockpit-chat {
+  flex: 1;
+  min-height: 0;
+  width: min(100%, 860px);
+  margin: 0 auto;
+  padding: 16px 24px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cockpit-chat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 2px 10px;
+}
+
+.cockpit-chat-head h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.cockpit-chat-sub {
+  font-size: 11px;
+  color: var(--ck-dim);
+  overflow-wrap: anywhere;
+}
+
+.cockpit-chat-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 7px 10px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ck-row-border);
+  background: var(--ck-row);
+}
+
+.cockpit-chat-banner.warn { color: var(--ck-warn); }
+.cockpit-chat-banner .dash-dot { flex-shrink: 0; }
+
+.cockpit-chat .chat-content {
+  flex: 1;
+  min-height: 0;
+  overflow-anchor: none;
+}
+
+/* --- board stage (Boards tab) --- */
+
+.cockpit-board {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+  padding: 20px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.cockpit-board .pulse-grid { grid-template-columns: repeat(8, 1fr); }
+.cockpit-board .dash-list { gap: 6px; }
+.cockpit-board .dz { padding: 0; }
+.cockpit-board .pulse-cell { padding: 12px 10px; }
+.cockpit-board .pulse-cell b { font-size: 22px; }
+.cockpit-board .pulse-cell i { font-size: 10px; }
+.cockpit-board .dash-item,
+.cockpit-board .run-row { font-size: 13px; padding: 8px 10px; }
+.cockpit-board .dz h3 { font-size: 12px; }
+
+.cockpit-board-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .cockpit-board-cols { grid-template-columns: 1fr; }
+  .cockpit-board .pulse-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* --- visuals stage (k-plex promoted) --- */
+
+.cockpit-visuals {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+  padding: 20px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cockpit-visuals .plex-stage {
+  padding: 18px;
+  border: 1px solid var(--ck-border);
+  border-radius: 12px;
+  background: var(--ck-bg);
+}
+
+/* the plex grammar, scaled from sidebar to stage */
+.cockpit-visuals .plex-stage .plex-panel { font-size: 14px; gap: 12px; }
+.cockpit-visuals .plex-stage .plex-search { padding: 9px 12px; font-size: 13px; }
+.cockpit-visuals .plex-stage .plex-walk { gap: 12px; }
+.cockpit-visuals .plex-stage .plex-zone-label { font-size: 10.5px; margin-bottom: 6px; }
+.cockpit-visuals .plex-stage .plex-node { font-size: 13px; padding: 6px 12px; border-radius: 10px; }
+.cockpit-visuals .plex-stage .plex-mid { grid-template-columns: minmax(120px, 1fr) 2.4fr minmax(120px, 1fr); gap: 12px; }
+.cockpit-visuals .plex-stage .plex-center { padding: 20px; border-width: 2px; }
+.cockpit-visuals .plex-stage .plex-center-title { font-size: 17px; }
+.cockpit-visuals .plex-stage .plex-center-path { font-size: 11.5px; }
+.cockpit-visuals .plex-stage .plex-center-cta { font-size: 12px; }
+
+.cockpit-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.cockpit-links .dz-tag {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.45;
+  margin-right: 2px;
+}
+
+.cockpit-links a {
+  font-size: 11px;
+  color: var(--ck-accent);
+  text-decoration: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--ck-accent-border);
+  background: var(--ck-accent-bg);
+}
+
+.cockpit-links a:hover { background: var(--ck-accent-bg-hover); }
+
+/* --- tasks stage (placeholder until MWP kanban wiring) --- */
+
+.cockpit-tasks {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+  padding: 20px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cockpit-tasks-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .cockpit-tasks-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.cockpit-task-col {
+  border: 1px dashed var(--ck-border);
+  border-radius: 10px;
+  padding: 10px;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--ck-bg);
+}
+
+.cockpit-task-col h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.cockpit-task-col p {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ck-dim);
+  line-height: 1.5;
+}
+
+.cockpit-unwired {
+  display: inline-block;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--ck-warn);
+  color: var(--ck-warn);
+}

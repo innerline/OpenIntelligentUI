@@ -84,6 +84,7 @@ export default function HomePage() {
       <header className="chat-header">
         <span className="chat-name">Honey</span>
         <nav aria-label="Main navigation">
+          <a href="/cockpit">Cockpit</a>
           <button type="button" onClick={newChat} disabled={agent.isRunning || retrying}>
             New chat
           </button>

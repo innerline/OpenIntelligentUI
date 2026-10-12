@@ -72,7 +72,8 @@ function noteTitle(full: string, raw: string): string {
 }
 
 function fmRelations(raw: string): Record<string, string[]> {
-  const fm = raw.match(/^---\n(.*?)\n---/s);
+  // [\s\S] rather than the `s` flag: the app targets ES2017.
+  const fm = raw.match(/^---\n([\s\S]*?)\n---/);
   const parts: Record<string, string[]> = {};
   if (!fm) return parts;
   let cur: string | null = null;

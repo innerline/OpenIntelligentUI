@@ -8,6 +8,7 @@
 // whatever vault path Honey's latest answer points at.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import "./plex-panel.css";
 
 type PlexNode = { title: string; path: string | null };
@@ -43,7 +44,8 @@ function PlexNodeButton({
   );
 }
 
-export function PlexPanel() {
+export function PlexPanel({ variant = "sidebar" }: { variant?: "sidebar" | "stage" }) {
+  const router = useRouter();
   const [note, setNote] = useState<string | null>(null);
   const [walk, setWalk] = useState<WalkPayload | null>(null);
   const [query, setQuery] = useState("");
@@ -97,6 +99,8 @@ export function PlexPanel() {
     (w: WalkPayload) => {
       // Drive the app's own chat input — the same path a human takes, so
       // thread state, sending logic and rendering are all the app's own.
+      // On surfaces with no chat input (the cockpit Visuals tab), hand off
+      // to the Honey tab with the question deep-linked (?q=).
       const text =
         `I'm standing on the k-plex node "${w.title}" (${w.path}). ` +
         "Give me its story: what it is, where it sits (parents/children/friends), " +
@@ -105,7 +109,7 @@ export function PlexPanel() {
         'textarea[placeholder*="Ask"], input[placeholder*="Ask"]',
       );
       if (!input) {
-        console.error("plex ask: chat input not found");
+        router.push(`/cockpit/honey?q=${encodeURIComponent(text)}`);
         return;
       }
       const proto = input instanceof HTMLTextAreaElement
@@ -127,7 +131,7 @@ export function PlexPanel() {
         );
       }, 60);
     },
-    [],
+    [router],
   );
 
   // Follow mode: when Honey's latest answer references a vault path, walk there.
@@ -152,7 +156,10 @@ export function PlexPanel() {
   );
 
   return (
-    <section className="dz plex-panel" aria-label="k-plex walk">
+    <section
+      className={`dz plex-panel${variant === "stage" ? " plex-panel-stage" : ""}`}
+      aria-label="k-plex walk"
+    >
       <div className="plex-head">
         <b>k-plex</b>
         <label className="plex-follow" title="Walk to whatever vault path Honey's latest answer points at">

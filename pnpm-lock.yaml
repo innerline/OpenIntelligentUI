@@ -23,6 +23,9 @@ importers:
       '@ag-ui/a2ui-middleware':
         specifier: ^0.0.2
         version: 0.0.2(@ag-ui/client@0.0.52)(rxjs@7.8.1)
+      '@ag-ui/client':
+        specifier: 0.0.52
+        version: 0.0.52
       '@ag-ui/mcp-apps-middleware':
         specifier: ^0.0.3
         version: 0.0.3(@ag-ui/client@0.0.52)(@cfworker/json-schema@4.1.1)(hono@4.11.7)(zod@3.25.76)
