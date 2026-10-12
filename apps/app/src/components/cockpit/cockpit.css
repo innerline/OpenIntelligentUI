@@ -605,3 +605,37 @@ html.dark .cockpit-app {
 }
 
 .cockpit-links a:hover { background: var(--ck-accent-bg-hover); }
+
+/* Drag-to-resize gutter on the sidebar's left edge (owner 2026-10-12).
+ * pointer events cover mouse, touch, and pencil; touch-action none so a
+ * pencil drag on iPad resizes instead of scrolling. Hidden in overlay
+ * mode (<860px) where the sidebar is not docked. */
+.cockpit-visuals-sidebar { position: relative; }
+.sidebar-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 48px;
+  border-radius: 1px;
+  background: color-mix(in oklab, currentColor 22%, transparent);
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer:active::after {
+  background: currentColor;
+}
+@media (max-width: 860px) {
+  .sidebar-resizer { display: none; }
+}

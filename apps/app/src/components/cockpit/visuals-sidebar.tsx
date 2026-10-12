@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { PlexPanel } from "@/components/kplex/plex-panel";
 import "./cockpit.css";
@@ -17,6 +17,19 @@ import "./cockpit.css";
 // (?visuals=1).
 
 const STORAGE_KEY = "cockpit:visuals-open";
+
+// Drag-to-resize (owner ask 2026-10-12): the sidebar's left edge is a
+// col-resize gutter — pointer drag (mouse, touch, pencil) resizes between
+// MIN_W and 70% of the viewport; the committed width persists in
+// localStorage; double-click the gutter to reset to the CSS default.
+// During the drag the width is applied straight to the element (zero
+// React renders mid-gesture); React state only takes the committed value
+// on pointer-up.
+const WIDTH_KEY = "cockpit:visuals-width";
+const MIN_W = 320;
+const MAX_W = 1100;
+const clampWidth = (w: number) =>
+  Math.round(Math.min(Math.max(w, MIN_W), Math.min(MAX_W, window.innerWidth * 0.7)));
 
 // The vault's Excalidraw diagram sources — carried over from the old
 // Visuals tab; link-outs open read-only through the receipt door, editing
@@ -52,6 +65,61 @@ export function VisualsSidebar() {
     pathname === "/cockpit/honey" ||
     pathname === "/cockpit/larry";
   const open = useSyncExternalStore(subscribe, readOpen, () => true);
+  const asideRef = useRef<HTMLElement>(null);
+  const [width, setWidth] = useState<number | null>(null);
+
+  // Committed width loads once after mount (never during SSR render), so
+  // server and client markup match.
+  useEffect(() => {
+    try {
+      const w = Number(window.localStorage.getItem(WIDTH_KEY));
+      if (Number.isFinite(w) && w >= MIN_W) setWidth(w);
+    } catch {
+      /* private-mode Safari — CSS default width applies */
+    }
+  }, []);
+
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const aside = asideRef.current;
+    if (!aside) return;
+    const startX = e.clientX;
+    const startW = aside.getBoundingClientRect().width;
+    const move = (ev: PointerEvent) => {
+      // Right-docked: dragging the gutter left widens the sidebar.
+      // flex shorthand + width together, so the class's 41%/680px cap
+      // cannot fight the drag.
+      const w = clampWidth(startW + (startX - ev.clientX));
+      aside.style.flex = `0 0 ${w}px`;
+      aside.style.width = `${w}px`;
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      const w = clampWidth(startW + (startX - ev.clientX));
+      setWidth(w);
+      try {
+        window.localStorage.setItem(WIDTH_KEY, String(w));
+      } catch {
+        /* private-mode Safari — width holds for this visit */
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const resetWidth = () => {
+    setWidth(null);
+    try {
+      window.localStorage.removeItem(WIDTH_KEY);
+    } catch {
+      /* private-mode Safari */
+    }
+    if (asideRef.current) {
+      asideRef.current.style.flex = "";
+      asideRef.current.style.width = "";
+    }
+  };
 
   // One-shot: old /cockpit/visuals links arrive with ?visuals=1 — force
   // the sidebar open (collapse is one tap) and clean the URL. Pure
@@ -80,6 +148,12 @@ export function VisualsSidebar() {
 
   return (
     <aside
+      ref={asideRef}
+      style={
+        width
+          ? { flex: `0 0 ${width}px`, width, minWidth: MIN_W, maxWidth: MAX_W }
+          : undefined
+      }
       className={
         "cockpit-visuals-sidebar" +
         (open ? "" : " sidebar-closed") +
@@ -87,6 +161,17 @@ export function VisualsSidebar() {
       }
       aria-label="Visuals — k-plex walk"
     >
+      {open && docked && (
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the visuals sidebar"
+          title="Drag to resize · double-click to reset"
+          onPointerDown={startDrag}
+          onDoubleClick={resetWidth}
+        />
+      )}
       <button
         className="sidebar-rail"
         onClick={() => toggle(true)}
