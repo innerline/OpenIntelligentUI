@@ -2,14 +2,18 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
+import { listKanbanCards, parseStatusVocabulary } from "@/lib/kanban";
+import type { KanbanCard, KanbanColumn } from "@/lib/kanban";
 
 // k-plex sidebar dashboard data — a pure read of the MWP vault.
 // Three outcomes (spec: copilot/projects/k-plex project/stage-01-dashboard-spec.md):
 //   (a) status at a glance  -> pulse (counts + last vault movement)
 //   (b) what needs me       -> unchecked OWNER-ACTIONS lines under LIVE BLOCKS
 //   (c) run history w/ receipts -> vault commits + done cards, every row linked
-// Plus the Meta-Maps entry layer (owner ruling 2026-10-10: first in every visual).
-// No daemon, no store: this runs only when the sidebar asks.
+// Plus the Meta-Maps entry layer (owner ruling 2026-10-10: first in every visual)
+// and, since the 2026-10-12 cockpit redesign, the full kanban mirror (columns =
+// kanban/STATUSES.md vocabulary, cards = kanban/*.md) that the Boards tab and
+// Honey's tasks panel render.
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +41,7 @@ export type BoardPayload = {
   metaMaps: MapItem[];
   needs: NeedItem[];
   runs: RunItem[];
+  kanban: { columns: KanbanColumn[]; cards: KanbanCard[] };
   generated: string;
 };
 
@@ -58,25 +63,6 @@ function gitLog(max: number): { hash: string; when: string; subject: string }[] 
       .filter((c) => c.hash && c.when);
   } catch {
     return [];
-  }
-}
-
-function frontmatter(file: string) {
-  try {
-    const text = fs.readFileSync(file, "utf8");
-    const lines = text.split("\n");
-    const fm: Record<string, string> = {};
-    if (lines[0]?.trim() !== "---") return { fm, title: path.basename(file, ".md") };
-    for (const ln of lines.slice(1, 25)) {
-      if (ln.trim() === "---") break;
-      const m = ln.match(/^([a-z_]+):\s*(.*)$/i);
-      if (m) fm[m[1]] = m[2].trim();
-    }
-    const title =
-      lines.find((l) => l.startsWith("# "))?.slice(2).trim() || path.basename(file, ".md");
-    return { fm, title };
-  } catch {
-    return { fm: {} as Record<string, string>, title: "" };
   }
 }
 
@@ -118,32 +104,46 @@ export async function GET() {
       }
     } catch {}
 
-    // kanban cards — counts for the pulse, done cards feed the run history
+    // kanban mirror — columns from STATUSES.md, cards = files whose
+    // frontmatter status is in that vocabulary (excludes views/system
+    // files like HONEY_QUEUE.md without hardcoding names). The pulse
+    // counts derive from the same list.
+    const columns: KanbanColumn[] = (() => {
+      try {
+        return parseStatusVocabulary(
+          fs.readFileSync(path.join(VAULT, "kanban/STATUSES.md"), "utf8"),
+        );
+      } catch {
+        return [];
+      }
+    })();
+    const vocabulary = new Set(columns.map((c) => c.key));
+    const cards = listKanbanCards(path.join(VAULT, "kanban"), vocabulary, {
+      prefix: "kanban",
+    });
+
     let inFlight = 0;
     let atGates = 0;
     let done7d = 0;
     const doneCards: RunItem[] = [];
     const dir = path.join(VAULT, "kanban");
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
-    const withMtime = files
-      .map((f) => ({ f, m: fs.statSync(path.join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.m - a.m);
-    for (const { f, m } of withMtime) {
-      if (f === "OWNER-ACTIONS.md" || f === "STATUSES.md") continue;
-      const { fm, title } = frontmatter(path.join(dir, f));
-      const status = fm.status || "";
-      if (status === "running" || status === "ready") inFlight++;
-      else if (status === "block" || status === "review") atGates++;
-      else if (status === "done") {
-        const age = now - m;
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
+    } catch {}
+    for (const c of cards) {
+      const age = now - Date.parse(c.updated);
+      if (c.status === "running" || c.status === "ready") inFlight++;
+      else if (c.status === "block" || c.status === "review") atGates++;
+      else if (c.status === "done") {
         if (age < 7 * day) done7d++;
         if (age < 14 * day)
           doneCards.push({
-            id: `card:${f}`,
-            when: new Date(m).toISOString(),
-            what: title.slice(0, 90),
+            id: `card:${c.file}`,
+            when: c.updated,
+            what: c.title.slice(0, 90),
             kind: "card",
-            receipt: { type: "file", path: `kanban/${f}` },
+            receipt: { type: "file", path: c.path },
           });
       }
     }
@@ -188,6 +188,7 @@ export async function GET() {
       metaMaps,
       needs,
       runs,
+      kanban: { columns, cards },
       generated: new Date().toISOString(),
     };
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });

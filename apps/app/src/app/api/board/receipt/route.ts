@@ -8,11 +8,15 @@ import { execFileSync } from "child_process";
 // vault file itself (card, map, episodic note). Read-only, vault-scoped.
 // The repo is private on GitHub, so receipts resolve locally, not via URLs
 // that would 404 logged-out.
+// `vault=personal` scopes the file read to the Personal vault (Larry's
+// myPKA task cards) — same read-only rules, separate root.
 
 export const dynamic = "force-dynamic";
 
 const VAULT = process.env.MWP_VAULT || "/Users/silverhawk/GitHub/MWP";
-const ROOT = path.resolve(VAULT);
+const PERSONAL_VAULT =
+  process.env.PERSONAL_VAULT ||
+  "/Users/silverhawk/Library/Mobile Documents/iCloud~md~obsidian/Documents/Personal";
 
 const text = (body: string, status = 200) =>
   new NextResponse(body, {
@@ -28,8 +32,11 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const commit = searchParams.get("commit");
   const file = searchParams.get("file");
+  const vault = searchParams.get("vault") === "personal" ? "personal" : "mwp";
+  const ROOT = path.resolve(vault === "personal" ? PERSONAL_VAULT : VAULT);
 
   if (commit) {
+    if (vault === "personal") return text("commits are MWP-vault only", 400);
     if (!/^[0-9a-f]{7,40}$/i.test(commit)) return text("bad commit id", 400);
     try {
       const out = execFileSync(

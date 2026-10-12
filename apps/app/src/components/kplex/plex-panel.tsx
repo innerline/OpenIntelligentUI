@@ -99,8 +99,9 @@ export function PlexPanel({ variant = "sidebar" }: { variant?: "sidebar" | "stag
     (w: WalkPayload) => {
       // Drive the app's own chat input — the same path a human takes, so
       // thread state, sending logic and rendering are all the app's own.
-      // On surfaces with no chat input (the cockpit Visuals tab), hand off
-      // to the Honey tab with the question deep-linked (?q=).
+      // On surfaces with no chat input (the docked Visuals sidebar), hand
+      // off to the Honey chat: same page → window event the Honey surface
+      // listens for; any other page → the question deep-linked (?q=).
       const text =
         `I'm standing on the k-plex node "${w.title}" (${w.path}). ` +
         "Give me its story: what it is, where it sits (parents/children/friends), " +
@@ -109,6 +110,10 @@ export function PlexPanel({ variant = "sidebar" }: { variant?: "sidebar" | "stag
         'textarea[placeholder*="Ask"], input[placeholder*="Ask"]',
       );
       if (!input) {
+        if (window.location.pathname === "/cockpit/honey") {
+          window.dispatchEvent(new CustomEvent("cockpit-ask-honey", { detail: text }));
+          return;
+        }
         router.push(`/cockpit/honey?q=${encodeURIComponent(text)}`);
         return;
       }

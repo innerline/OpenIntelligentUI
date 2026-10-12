@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { doorUrl } from "@/lib/vault-links";
 import "./cockpit.css";
 
-// Boards tab — the sidebar board's data source promoted to a full surface.
-// Same /api/board read (a pure vault read, no daemon), same three outcomes
-// (pulse / needs me / runs w/ receipts), laid out for width instead of a
-// 340px rail. The sidebar keeps its compact form on the chat page.
+// Boards tab — the MWP vault kanban, mirrored (owner directive
+// 2026-10-12: "the board is like the Kanban on MWP vault"). Columns are
+// the statuses from kanban/STATUSES.md, cards are kanban/*.md
+// (title/status/tags), every card clicks through the vault door.
+// The board's older instruments stay, demoted below the columns: the
+// pulse strip, OWNER-ACTIONS needs, and run history with receipts —
+// same /api/board read (a pure vault read, no daemon).
 
 type NeedItem = { text: string; kind: string; cardPath: string | null };
 type RunItem = {
@@ -17,6 +21,16 @@ type RunItem = {
   receipt: { type: "commit"; hash: string } | { type: "file"; path: string };
 };
 type MapItem = { path: string; title: string };
+type KanbanColumn = { key: string; note: string };
+type KanbanCard = {
+  file: string;
+  path: string;
+  title: string;
+  status: string;
+  owner: string | null;
+  tags: string[];
+  updated: string;
+};
 
 type Board = {
   pulse: {
@@ -30,6 +44,7 @@ type Board = {
   metaMaps: MapItem[];
   needs: NeedItem[];
   runs: RunItem[];
+  kanban: { columns: KanbanColumn[]; cards: KanbanCard[] };
   generated?: string;
 };
 
@@ -155,6 +170,55 @@ export function BoardsView() {
             moved {rel(p.lastMovement.when)} ago — {p.lastMovement.what} <span className="rarrow">↗</span>
           </a>
         )}
+      </section>
+
+      {/* the kanban itself — columns = STATUSES.md, cards = kanban/*.md,
+          click-through = the vault door */}
+      <section className="dz kanban-mirror" aria-label="MWP kanban mirror">
+        <h3>
+          MWP kanban <span className="dash-count">{board.kanban.cards.length}</span>
+        </h3>
+        <div className="kanban-columns">
+          {board.kanban.columns.map((col) => {
+            const cards = board.kanban.cards.filter((c) => c.status === col.key);
+            return (
+              <div key={col.key} className="kanban-col" data-status={col.key}>
+                <h4 title={col.note}>
+                  {col.key} <span className="dash-count">{cards.length}</span>
+                </h4>
+                <div className="kanban-cards">
+                  {cards.length === 0 && <i className="plex-empty">none</i>}
+                  {cards.map((c) => (
+                    <a
+                      key={c.path}
+                      className="kanban-card"
+                      href={doorUrl(c.path)}
+                      target="_blank"
+                      rel="noopener"
+                      title={`${c.path}${c.owner ? ` · ${c.owner}` : ""}`}
+                    >
+                      <span className="kanban-card-title">{c.title}</span>
+                      {(c.owner || c.tags.length > 0) && (
+                        <span className="kanban-card-meta">
+                          {c.owner && <span className="kanban-owner">{c.owner}</span>}
+                          {c.tags.slice(0, 3).map((t) => (
+                            <span key={t} className="kanban-tag">
+                              {t}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="dash-dim kanban-hint">
+          cards open in the vault door — moving a card stays in the vault (edit its
+          <code> status:</code>, commit); this mirror is read-only.
+        </p>
       </section>
 
       <div className="cockpit-board-cols">

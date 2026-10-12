@@ -5,16 +5,17 @@ import { usePathname } from "next/navigation";
 import { useEngineStatuses } from "./engine-status";
 import "./cockpit.css";
 
-// The five cockpit surfaces. Engine tabs carry a live status dot fed by
-// the shared engine-status context (the adapters sit on Studio loopback;
-// only the server can probe them). The dot is a light, not a gate.
+// The cockpit surfaces after the 2026-10-12 redesign: Honey and Larry
+// (chats with embedded task panels; the Visuals sidebar docks alongside
+// them) and Boards (the MWP kanban mirror). Engine tabs carry a live
+// status dot fed by the shared engine-status context (the adapters sit
+// on Studio loopback; only the server can probe them). The dot is a
+// light, not a gate.
 
 const TABS = [
   { href: "/cockpit/honey", label: "Honey", engine: "honey" as const },
   { href: "/cockpit/larry", label: "Larry", engine: "larry" as const },
   { href: "/cockpit/boards", label: "Boards", engine: null },
-  { href: "/cockpit/visuals", label: "Visuals", engine: null },
-  { href: "/cockpit/tasks", label: "Tasks", engine: null },
 ];
 
 export function CockpitNav() {
