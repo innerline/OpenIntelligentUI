@@ -2,7 +2,7 @@ import { EngineChat } from "@/components/cockpit/engine-chat";
 import { TasksPanel } from "@/components/cockpit/tasks-panel";
 import { LARRY_AGUI_URL } from "@/lib/copilotkit-runtime-options";
 
-// Larry surface — PRE-LIVE PREVIEW, deliberately NOT presented as Honey's
+// Larry surface — LIVE (GO 2026-10-13): real lane :8127, myPKA contract, task-walk boot
 // twin. Owner ruling (weeks standing, restated 2026-10-11/12): Larry is
 // nothing like Honey — very different backend. Larry's real engine
 // (local-first at go-live, Personal vault / myPKA team, own relay :3100
@@ -21,7 +21,7 @@ export default function LarryPage() {
         endpoint={LARRY_AGUI_URL}
         welcome="Preview lane. Larry's real engine is not built yet — go-live brings his own: local-first models, the Personal vault, his relay."
         placeholder="Preview only — Talk to Larry…"
-        notice="PRE-LIVE PREVIEW — this is a temporary adapter shaped like Honey's. Larry's actual backend (local models at go-live, Personal vault, own relay) is not built. He is not Honey and will not stay this shape."
+        notice="LIVE — Larry, team orchestrator of your myPKA (Personal vault). Real engine lane :8127 — OpenCode persona, his own contract, boot task-walk, own board. Not Honey: different base, different team, different rules. Local-model lane wired (one flag) pending your model pick."
       />
       <TasksPanel source="larry" />
     </div>
