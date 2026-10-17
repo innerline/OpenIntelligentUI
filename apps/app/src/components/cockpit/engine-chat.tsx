@@ -22,6 +22,26 @@ import "./cockpit.css";
 // unrelated re-renders (status polls). Keep these at module level.
 const MESSAGE_VIEW = { assistantMessage: { markdownRenderer: AnswerMarkdown } };
 
+// owner 2026-10-17: tab switch in Safari discarded the page; CopilotKit
+// minted a fresh thread per mount and the engine session orphaned —
+// pin the thread per browser and restore history on remount.
+function loadThreadId(agentId: string): string {
+  const key = "cockpit.thread." + agentId;
+  try {
+    const existing = window.localStorage.getItem(key);
+    if (existing) return existing;
+    const minted = "web-" + uuid();
+    window.localStorage.setItem(key, minted);
+    return minted;
+  } catch {
+    // Storage blocked (private mode): unpinned but usable for this mount.
+    return "web-" + uuid();
+  }
+}
+
+// One restored turn from the adapter's GET /threads/{id}.
+type TranscriptMessage = { role: string; content: string };
+
 export function EngineChat({
   agentId,
   title,
@@ -43,6 +63,46 @@ export function EngineChat({
   const status = statuses?.[agentId];
   const [error, setError] = useState<string | null>(null);
   const sentDeepLink = useRef(false);
+  // Read once per mount — survives tab discard via localStorage, so the
+  // remounted page rejoins the SAME engine thread instead of orphaning it.
+  const [threadId] = useState(() => loadThreadId(agentId));
+
+  // History restore: after a remount the chat's message list is empty
+  // (CopilotKit keeps threads in memory only), so pull the transcript the
+  // adapter recorded for this thread. Guarded to never seed mid-run.
+  const restore = useCallback(() => {
+    if (agent.messages.length > 0 || agent.isRunning) return;
+    fetch(
+      `/api/cockpit/thread-messages?agent=${encodeURIComponent(agentId)}&thread=${encodeURIComponent(threadId)}`,
+    )
+      .then((res) => (res.ok ? res.json() : Promise.resolve({ messages: [] })))
+      .then((body: { messages?: TranscriptMessage[] }) => {
+        const turns = body.messages ?? [];
+        if (turns.length === 0) return;
+        if (agent.messages.length > 0 || agent.isRunning) return; // re-check after await
+        const mapped: { id: string; role: "user" | "assistant"; content: string }[] = [];
+        turns.forEach((m, idx) => {
+          if (m.role !== "user" && m.role !== "assistant") return;
+          mapped.push({ id: `t${idx}`, role: m.role, content: m.content });
+        });
+        if (mapped.length > 0) agent.setMessages(mapped);
+      })
+      .catch(() => {}); // best-effort: the chat works without history
+  }, [agent, agentId, threadId]);
+
+  useEffect(() => {
+    restore();
+  }, [restore]);
+
+  // Safari discards this tab in the background; on return, the page is
+  // fresh again — same cheap guarded restore as on mount.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") restore();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [restore]);
 
   // One send path for deep links and the Visuals sidebar hand-off — the
   // human path (addMessage + runAgent), live-proven 2026-10-12.
@@ -130,6 +190,7 @@ export function EngineChat({
       <div className="chat-content">
         <CopilotChat
           agentId={agentId}
+          threadId={threadId}
           autoScroll={false}
           scrollView={ReaderScrollView}
           messageView={MESSAGE_VIEW}
