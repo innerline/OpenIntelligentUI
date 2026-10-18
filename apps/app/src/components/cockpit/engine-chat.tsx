@@ -65,7 +65,37 @@ export function EngineChat({
   const sentDeepLink = useRef(false);
   // Read once per mount — survives tab discard via localStorage, so the
   // remounted page rejoins the SAME engine thread instead of orphaning it.
-  const [threadId] = useState(() => loadThreadId(agentId));
+  const [threadId, setThreadId] = useState(() => loadThreadId(agentId));
+
+  // Cross-device rejoin (kanban/cockpit-thread-continuity, 2026-10-18):
+  // the localStorage pin is per BROWSER — phone and laptop each minted
+  // their own thread and the owner's conversation scattered across them.
+  // The adapter answers /thread/current with the persona's most recently
+  // active thread; adopt it while this mount is still idle (no history
+  // restored yet, no run in flight). Whatever thread spoke last IS the
+  // anchor, so a device that drifts rejoins on its next mount and the
+  // conversation converges to one thread without a mid-chat yank.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/cockpit/thread-current?agent=${encodeURIComponent(agentId)}`)
+      .then((res) => (res.ok ? res.json() : Promise.resolve({ threadId: null })))
+      .then((body: { threadId?: string | null }) => {
+        if (cancelled) return;
+        const anchor = typeof body.threadId === "string" ? body.threadId : null;
+        if (!anchor || anchor === threadId) return;
+        if (agent.messages.length > 0 || agent.isRunning) return;
+        setThreadId(anchor);
+        try {
+          window.localStorage.setItem("cockpit.thread." + agentId, anchor);
+        } catch {
+          // Storage blocked — this mount still rejoins the anchor.
+        }
+      })
+      .catch(() => {}); // best-effort: the pin keeps the chat working
+    return () => {
+      cancelled = true;
+    };
+  }, [agent, agentId, threadId]);
 
   // History restore: after a remount the chat's message list is empty
   // (CopilotKit keeps threads in memory only), so pull the transcript the
