@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopilotChat, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import { uuid } from "@/lib/uuid";
-import { detectOwnerDevice, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice } from "@/lib/owner-device";
+import { detectOwnerDevice, getOwnerDeviceSource, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice, type OwnerDeviceSource } from "@/lib/owner-device";
 import { OwnerDeviceChip } from "@/components/cockpit/owner-device-chip";
 import { isVisualPointer, publishVisual } from "@/lib/visual-pointer";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
@@ -73,12 +73,23 @@ export function EngineChat({
   // Device tag (kanban/device-input-matrix): this send path calls
   // agent.runAgent() DIRECTLY, which bypasses the provider's
   // `properties` merge — so the tag is passed explicitly here too.
-  // Re-pinnable mid-mount (2026-10-18 loopback misfire, owner on his
-  // laptop tagged studio): the header's device chip pins the truth and
-  // this listener re-reads it, so the NEXT run carries the new tag.
-  const [device, setDevice] = useState<OwnerDevice>(() => detectOwnerDevice());
+  // Classification is SERVER-side (owner hit #3, 2026-10-18): the
+  // runtime edge stamps the browser's real peer address + UA on every
+  // proxied run; this tag is SOURCED — the chip's pin ("pin") beats
+  // every server signal, the heuristic guess ("heuristic") is only a
+  // last-resort fallback when the server could not classify. The
+  // header's device chip re-pins the truth and this listener re-reads
+  // it, so the NEXT run carries the new tag.
+  const [deviceTag, setDeviceTag] = useState<{
+    device: OwnerDevice;
+    deviceSource: OwnerDeviceSource;
+  }>(() => ({ device: detectOwnerDevice(), deviceSource: getOwnerDeviceSource() }));
   useEffect(() => {
-    const onChange = () => setDevice(detectOwnerDevice());
+    const onChange = () =>
+      setDeviceTag({
+        device: detectOwnerDevice(),
+        deviceSource: getOwnerDeviceSource(),
+      });
     window.addEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
     return () => window.removeEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
   }, []);
@@ -170,11 +181,11 @@ export function EngineChat({
     (text: string) => {
       if (agent.isRunning) return;
       agent.addMessage({ id: uuid(), role: "user", content: text });
-      agent.runAgent({ forwardedProps: { device } }).catch(() =>
+      agent.runAgent({ forwardedProps: { ...deviceTag } }).catch(() =>
         setError("The engine could not be reached. Check the adapter, then retry."),
       );
     },
-    [agent, device],
+    [agent, deviceTag],
   );
 
   // "Ask Honey about this node" from the docked Visuals sidebar (same

@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { LangGraphHttpAgent } from "@copilotkit/runtime/langgraph";
-import { HttpAgent } from "@ag-ui/client";
-import { buildRuntimeOptions, HONEY_AGUI_URL, LARRY_AGUI_URL } from "../copilotkit-runtime-options";
+import { HttpAgent, type RunAgentInput } from "@ag-ui/client";
+import {
+  buildRuntimeOptions,
+  extractClientPeer,
+  HONEY_AGUI_URL,
+  LARRY_AGUI_URL,
+} from "../copilotkit-runtime-options";
 
 describe("buildRuntimeOptions", () => {
   it("isolates credentials between runtime instances", () => {
@@ -73,5 +78,106 @@ describe("buildRuntimeOptions", () => {
         serverId: "example_mcp_app",
       }],
     });
+  });
+});
+
+// --- Server-side device classification (kanban/device-input-matrix,
+// owner hit #3, 2026-10-18): the runtime edge stamps the browser's real
+// peer address + User-Agent onto every proxied AG-UI run so the
+// adapters can classify the desk — a browser cannot tell the desks
+// apart; the connecting machine's address can.
+
+const MAC_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+function runInput(): RunAgentInput {
+  return {
+    threadId: "t1",
+    runId: "r1",
+    messages: [],
+    tools: [],
+    context: [],
+    state: {},
+    forwardedProps: { device: "studio", deviceSource: "heuristic" },
+  } as unknown as RunAgentInput;
+}
+
+// requestInit is protected by design; the test drives the documented
+// hook through the subclass contract.
+function requestInitOf(agent: HttpAgent, input: RunAgentInput): RequestInit {
+  return (agent as unknown as {
+    requestInit(input: RunAgentInput): RequestInit;
+  }).requestInit(input);
+}
+
+function forwardedPropsOf(init: RequestInit): Record<string, unknown> {
+  expect(init.method).toBe("POST");
+  return JSON.parse(init.body as string).forwardedProps;
+}
+
+describe("server-side device context stamping", () => {
+  it("stamps the browser's peer address and user agent on every cockpit agent run", () => {
+    const options = buildRuntimeOptions({
+      clientPeer: "100.127.208.46",
+      clientUserAgent: MAC_UA,
+    });
+    for (const agent of [options.agents.honey, options.agents.larry]) {
+      expect(agent).toBeInstanceOf(HttpAgent);
+      const props = forwardedPropsOf(requestInitOf(agent, runInput()));
+      expect(props.devicePeer).toBe("100.127.208.46");
+      expect(props.deviceUserAgent).toBe(MAC_UA);
+      // the client's own (sourced) tag rides alongside, untouched
+      expect(props.device).toBe("studio");
+      expect(props.deviceSource).toBe("heuristic");
+    }
+  });
+
+  it("stamps nothing when the server could not see the browser", () => {
+    const options = buildRuntimeOptions({});
+    for (const agent of [options.agents.honey, options.agents.larry]) {
+      const props = forwardedPropsOf(requestInitOf(agent, runInput()));
+      expect(props).not.toHaveProperty("devicePeer");
+      expect(props).not.toHaveProperty("deviceUserAgent");
+      expect(props.device).toBe("studio"); // the client payload passes through
+    }
+  });
+
+  it("stamps the peer alone when no user agent is available", () => {
+    const options = buildRuntimeOptions({ clientPeer: "192.168.1.55" });
+    const props = forwardedPropsOf(requestInitOf(options.agents.honey, runInput()));
+    expect(props.devicePeer).toBe("192.168.1.55");
+    expect(props).not.toHaveProperty("deviceUserAgent");
+  });
+
+  it("preserves a forwardedProps-free run (creates the object safely)", () => {
+    const options = buildRuntimeOptions({ clientPeer: "100.127.208.46" });
+    const input = runInput();
+    delete (input as { forwardedProps?: unknown }).forwardedProps;
+    const props = forwardedPropsOf(requestInitOf(options.agents.honey, input));
+    expect(props.devicePeer).toBe("100.127.208.46");
+  });
+});
+
+describe("extractClientPeer", () => {
+  it("reads the connecting machine's address from x-forwarded-for", () => {
+    expect(
+      extractClientPeer(new Headers({ "x-forwarded-for": "100.127.208.46" })),
+    ).toBe("100.127.208.46");
+  });
+
+  it("takes the first entry of a proxy chain", () => {
+    expect(
+      extractClientPeer(new Headers({ "x-forwarded-for": "203.0.113.9, 10.0.0.1" })),
+    ).toBe("203.0.113.9");
+  });
+
+  it("falls back to x-real-ip, then null", () => {
+    expect(extractClientPeer(new Headers({ "x-real-ip": "100.127.208.46" }))).toBe(
+      "100.127.208.46",
+    );
+    expect(extractClientPeer(new Headers())).toBeNull();
+    expect(
+      extractClientPeer(new Headers({ "x-forwarded-for": "  " })),
+    ).toBeNull();
   });
 });

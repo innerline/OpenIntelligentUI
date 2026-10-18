@@ -5,27 +5,34 @@
 // phone = short/voice-ready, iPad = excalidraw canvas, laptop = K-Plex
 // visuals, studio = full cockpit.
 //
-// Two layers, the pin above the guess:
+// Classification is SERVER-SIDE (owner hit #3, 2026-10-18): a browser
+// cannot tell which physical desk a desktop sits at, but the server sees
+// the connecting machine's address. The /api/copilotkit edge stamps the
+// browser's real peer address + User-Agent onto every proxied run
+// (forwardedProps.devicePeer / deviceUserAgent) and the ADAPTER resolves
+// the tag: pin → UA phone/ipad → peer (loopback/Studio address = studio,
+// any other = laptop) → this client guess → studio. The layers here:
 //   1. OVERRIDE — the owner's manual pin (the device chip in the chat
-//      header writes it, localStorage key owner-device-override). A
-//      browser fundamentally cannot tell which physical desk a desktop
-//      sits at, so when the guess is wrong the owner pins the truth
-//      once per browser and the pin always beats the guess.
-//   2. HEURISTIC — the no-override initial guess, coarse by design:
+//      header writes it, localStorage key owner-device-override). The
+//      pin is sent SOURCED (deviceSource: "pin") and beats every
+//      server-side signal — when the machine genuinely sits at the
+//      wrong desk for its address, the owner's word is final.
+//   2. HEURISTIC — the no-override initial guess, now only a
+//      last-resort FALLBACK payload (deviceSource: "heuristic") for
+//      when the server could not classify:
 //     phone  — iPhone/Android UA, or any narrow (<768px) viewport
 //     ipad   — iPad UA, or a desktop-mode iPad (touch + 768–1366px)
 //     laptop — desktop browser served from a NON-loopback host
 //     studio — desktop browser on a loopback page origin, and the
 //              fallback when nothing classifies
 //
-// Known weakness (documented, not fixed): loopback-as-studio misfires
-// whenever the laptop reaches the cockpit through a loopback-shaped
-// path — an SSH tunnel, a localhost URL on a forwarded port (exactly
-// the 2026-10-18 misfire: owner on his laptop, tagged "studio"). No
-// browser-side heuristic can resolve which machine a desktop class of
-// client sits at, so the override is the answer, not a smarter guess.
-// The adapter ALSO defaults a missing tag to studio, so even a
-// mis-detected client can only ever land the owner on the
+// Known weakness (documented, superseded): loopback-as-studio misfired
+// whenever the laptop reached the cockpit through a loopback-shaped
+// path (2026-10-18, three owner hits). The server-side peer lanes now
+// answer before this guess; the pin remains the override for the
+// shapes no address can settle (e.g. a pure SSH tunnel sources
+// loopback). The adapter ALSO defaults a missing tag to studio, so even
+// a mis-detected client can only ever land the owner on the
 // full-cockpit contract.
 
 export type OwnerDevice = "phone" | "ipad" | "laptop" | "studio";
@@ -81,6 +88,17 @@ export function setOwnerDeviceOverride(device: OwnerDevice | null): void {
     // storage blocked: the event below still updates this mount
   }
   window.dispatchEvent(new Event(OWNER_DEVICE_CHANGED_EVENT));
+}
+
+// Where the tag came from. "pin" — the owner's manual override, sent
+// alongside the device so the ADAPTER can tell the owner's word from
+// the browser's guess apart: a pin beats every server-side signal
+// (peer address, UA), a heuristic guess is only a last-resort fallback
+// when the server could not classify.
+export type OwnerDeviceSource = "pin" | "heuristic";
+
+export function getOwnerDeviceSource(): OwnerDeviceSource {
+  return getOwnerDeviceOverride() !== null ? "pin" : "heuristic";
 }
 
 export function detectOwnerDevice(): OwnerDevice {

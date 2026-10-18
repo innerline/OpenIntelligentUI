@@ -429,6 +429,40 @@ it("the chip pins the device and the next mount's runs carry the pinned tag", as
   await waitFor(() => expect(second.runPayloads.length).toBeGreaterThan(0));
   expect(second.runPayloads[0]?.forwardedProps).toMatchObject({
     device: "laptop",
+    deviceSource: "pin",
+  });
+  window.history.replaceState({}, "", "/");
+});
+
+it("sources the tag so the adapter can tell pin from guess", async () => {
+  // server-side classification (owner hit #3): the runtime edge stamps
+  // the browser's real peer on the run; the client tag survives as a
+  // SOURCED payload — "heuristic" is advisory (server signals outrank
+  // it), "pin" is the owner's word and beats everything
+  stubDeviceEnv({ ua: MAC_UA, width: 1728 });
+  stubHostname("127.0.0.1"); // the exact misfire shape: heuristic says studio
+  window.history.replaceState({}, "", "/cockpit/honey?q=hi");
+  const first = mockFetch(null, {});
+  vi.stubGlobal("fetch", first.fn);
+  chat();
+
+  await waitFor(() => expect(first.runPayloads.length).toBeGreaterThan(0));
+  expect(first.runPayloads[0]?.forwardedProps).toMatchObject({
+    device: "studio",
+    deviceSource: "heuristic",
+  });
+  window.history.replaceState({}, "", "/");
+
+  window.localStorage.setItem(OVERRIDE_KEY, "laptop");
+  window.history.replaceState({}, "", "/cockpit/honey?q=again");
+  const second = mockFetch(null, {});
+  vi.stubGlobal("fetch", second.fn);
+  chat();
+
+  await waitFor(() => expect(second.runPayloads.length).toBeGreaterThan(0));
+  expect(second.runPayloads[0]?.forwardedProps).toMatchObject({
+    device: "laptop",
+    deviceSource: "pin",
   });
   window.history.replaceState({}, "", "/");
 });

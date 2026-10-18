@@ -5,7 +5,7 @@ import {
 } from "@copilotkit/runtime";
 import { NextRequest } from "next/server";
 import { readProviderHeaders, PROVIDER_KEY_INPUT_ERROR } from "@/lib/provider-keys";
-import { buildRuntimeOptions } from "@/lib/copilotkit-runtime-options";
+import { buildRuntimeOptions, extractClientPeer } from "@/lib/copilotkit-runtime-options";
 
 // Simple in-memory sliding-window rate limiter (per IP)
 // Enable via RATE_LIMIT_ENABLED=true — off by default.
@@ -48,11 +48,25 @@ export const POST = async (req: NextRequest) => {
   } catch {
     return Response.json({ error: PROVIDER_KEY_INPUT_ERROR }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
+  // Server-side owner-device classification (kanban/device-input-matrix,
+  // owner hit #3, 2026-10-18): THIS edge is the only hop that sees the
+  // browser's real address — the adapter hop beyond it is localhost by
+  // construction, and a browser cannot tell the desks apart. Capture the
+  // peer + User-Agent here and stamp them onto every AG-UI run the
+  // runtime proxies (buildRuntimeOptions → PeerTaggedHttpAgent →
+  // forwardedProps.devicePeer/deviceUserAgent); the adapters classify:
+  // pin → UA phone/ipad → loopback/Studio-address = studio, any other
+  // peer = laptop → client guess → studio.
+  const clientPeer = extractClientPeer(req.headers);
+  const clientUserAgent = req.headers.get("user-agent");
+
   // Construct the agent per request so one visitor's keys cannot reach another.
   const runtimeOptions = buildRuntimeOptions({
     langgraphUrl: process.env.LANGGRAPH_DEPLOYMENT_URL,
     mcpServerUrl: process.env.MCP_SERVER_URL,
     providerHeaders,
+    clientPeer,
+    clientUserAgent,
   });
 
   const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
