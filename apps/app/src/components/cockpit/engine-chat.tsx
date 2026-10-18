@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopilotChat, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import { uuid } from "@/lib/uuid";
+import { detectOwnerDevice } from "@/lib/owner-device";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
 import { AnswerMarkdown } from "@/components/chat/answer-markdown";
 import { useEngineStatuses } from "./engine-status";
@@ -63,6 +64,11 @@ export function EngineChat({
   const status = statuses?.[agentId];
   const [error, setError] = useState<string | null>(null);
   const sentDeepLink = useRef(false);
+  // Device tag (kanban/device-input-matrix): this send path calls
+  // agent.runAgent() DIRECTLY, which bypasses the provider's
+  // `properties` merge — so the tag is passed explicitly here too.
+  // Coarse, once per mount, same detector the provider uses.
+  const device = useMemo(() => detectOwnerDevice(), []);
   // Read once per mount — survives tab discard via localStorage, so the
   // remounted page rejoins the SAME engine thread instead of orphaning it.
   const [threadId, setThreadId] = useState(() => loadThreadId(agentId));
@@ -140,11 +146,11 @@ export function EngineChat({
     (text: string) => {
       if (agent.isRunning) return;
       agent.addMessage({ id: uuid(), role: "user", content: text });
-      agent.runAgent().catch(() =>
+      agent.runAgent({ forwardedProps: { device } }).catch(() =>
         setError("The engine could not be reached. Check the adapter, then retry."),
       );
     },
-    [agent],
+    [agent, device],
   );
 
   // "Ask Honey about this node" from the docked Visuals sidebar (same
