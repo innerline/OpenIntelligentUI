@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { Providers } from "@/app/providers";
@@ -18,8 +18,13 @@ const PIN_KEY = "cockpit.thread.honey";
 // Same shape as shared-thread.test.tsx's mockRuntime: keep the real SDK
 // providers/agent internals, replace only the HTTP boundary. runPayloads
 // records every agent run body the surface fires (device tag lives there,
-// kanban/device-input-matrix).
-function mockFetch(anchor: string | null, transcripts: Record<string, unknown>) {
+// kanban/device-input-matrix). visual rides RUN_FINISHED's result — the
+// adapter's parsed VISUAL machine line (slice 2).
+function mockFetch(
+  anchor: string | null,
+  transcripts: Record<string, unknown>,
+  runVisual: unknown = undefined,
+) {
   const threadFetches: string[] = [];
   const runPayloads: Record<string, unknown>[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -53,7 +58,23 @@ function mockFetch(anchor: string | null, transcripts: Record<string, unknown>) 
     const events = [
       { type: "RUN_STARTED", threadId: payload.threadId, runId: payload.runId },
       ...(connecting ? [{ type: "MESSAGES_SNAPSHOT", messages: [] }] : []),
-      { type: "RUN_FINISHED", threadId: payload.threadId, runId: payload.runId },
+      ...(runVisual !== undefined
+        ? [
+            {
+              type: "RUN_FINISHED",
+              threadId: payload.threadId,
+              runId: payload.runId,
+              result: { visual: runVisual },
+            },
+          ]
+        : [
+            {
+              type: "RUN_FINISHED",
+              threadId: payload.threadId,
+              runId: payload.runId,
+              result: { visual: null },
+            },
+          ]),
     ];
     return new Response(
       events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
@@ -246,5 +267,168 @@ it("tags every outbound run with the detected owner device", async () => {
 
   await waitFor(() => expect(runPayloads.length).toBeGreaterThan(0));
   expect(runPayloads[0]?.forwardedProps).toMatchObject({ device: "phone" });
+  window.history.replaceState({}, "", "/");
+});
+
+// --- Visual pointer (kanban/device-input-matrix slice 2, 2026-10-18) ---
+// The adapter strips the VISUAL machine line from the reply and parks
+// the parsed pointer on RUN_FINISHED's result; the chat surface
+// republishes it to the pointing sidebar (slot + window event). A null
+// pointer CLEARS the slot — the latest reply pointed at nothing.
+
+const SLOT_KEY = "cockpit.visual.honey";
+
+it("publishes the run's visual pointer to the sidebar slot", async () => {
+  window.history.replaceState({}, "", "/cockpit/honey?q=show%20me%20the%20map");
+  const { fn } = mockFetch(null, {}, {
+    kind: "map",
+    path: "Vision/Agent Visuals/example.excalidraw.md",
+  });
+  vi.stubGlobal("fetch", fn);
+
+  const seen: { agent?: string; visual?: unknown }[] = [];
+  const onVisual = (e: Event) => {
+    seen.push((e as CustomEvent<{ agent?: string; visual?: unknown }>).detail);
+  };
+  window.addEventListener("cockpit-visual", onVisual);
+  chat();
+
+  await waitFor(() =>
+    expect(window.localStorage.getItem(SLOT_KEY)).toBe(
+      JSON.stringify({
+        kind: "map",
+        path: "Vision/Agent Visuals/example.excalidraw.md",
+      }),
+    ),
+  );
+  expect(seen.at(-1)).toEqual({
+    agent: "honey",
+    visual: { kind: "map", path: "Vision/Agent Visuals/example.excalidraw.md" },
+  });
+  window.removeEventListener("cockpit-visual", onVisual);
+  window.history.replaceState({}, "", "/");
+});
+
+it("clears the slot when the run points at nothing", async () => {
+  window.localStorage.setItem(
+    SLOT_KEY,
+    JSON.stringify({ kind: "plex", path: "K-Plex/Mind Map.md" }),
+  );
+  window.history.replaceState({}, "", "/cockpit/honey?q=plain%20answer");
+  const { fn } = mockFetch(null, {}); // RUN_FINISHED carries visual:null
+  vi.stubGlobal("fetch", fn);
+
+  chat();
+
+  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
+  window.history.replaceState({}, "", "/");
+});
+
+it("restores the last reply's pointer from the thread transcript", async () => {
+  // remount after tab discard: the transcript's LAST assistant turn
+  // carries the visual the adapter recorded — the sidebar re-points
+  window.localStorage.setItem(PIN_KEY, "web-vis");
+  const { fn } = mockFetch("web-vis", {
+    "web-vis": [
+      { role: "user", content: "where is it?" },
+      {
+        role: "assistant",
+        content: "It is here.",
+        visual: { kind: "file", path: "kanban/device-input-matrix.md" },
+      },
+    ],
+  });
+  vi.stubGlobal("fetch", fn);
+
+  chat();
+
+  await waitFor(() =>
+    expect(window.localStorage.getItem(SLOT_KEY)).toBe(
+      JSON.stringify({ kind: "file", path: "kanban/device-input-matrix.md" }),
+    ),
+  );
+});
+
+it("restore clears the slot when the last reply had no pointer", async () => {
+  window.localStorage.setItem(
+    SLOT_KEY,
+    JSON.stringify({ kind: "map", path: "old.excalidraw.md" }),
+  );
+  window.localStorage.setItem(PIN_KEY, "web-plain");
+  const { fn } = mockFetch("web-plain", {
+    "web-plain": [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello, no artifact involved" },
+    ],
+  });
+  vi.stubGlobal("fetch", fn);
+
+  chat();
+
+  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
+});
+
+// --- Device override (owner refinement 2026-10-18: loopback misfire) ---
+// The heuristic guesses; the owner pins. A pinned override beats every
+// heuristic signal; no pin (or a corrupt one) falls back to the guess;
+// the chip's pin rides the next run's forwardedProps.device.
+
+const OVERRIDE_KEY = "owner-device-override";
+const IPHONE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1";
+
+it("a pinned override beats the heuristic guess", () => {
+  // UA says phone loudly; the pin says laptop — the pin wins
+  stubDeviceEnv({ ua: IPHONE_UA });
+  window.localStorage.setItem(OVERRIDE_KEY, "laptop");
+  expect(detectOwnerDevice()).toBe("laptop");
+});
+
+it("no override falls back to the heuristic", () => {
+  stubDeviceEnv({ ua: IPHONE_UA });
+  expect(detectOwnerDevice()).toBe("phone");
+});
+
+it("a corrupt override is ignored, not trusted", () => {
+  stubDeviceEnv({ ua: IPHONE_UA });
+  window.localStorage.setItem(OVERRIDE_KEY, "toaster");
+  expect(detectOwnerDevice()).toBe("phone");
+});
+
+it("the chip pins the device and the next mount's runs carry the pinned tag", async () => {
+  // the exact 2026-10-18 misfire shape: desktop browser on a loopback
+  // origin — heuristic says studio while the owner sits at his laptop
+  stubDeviceEnv({ ua: MAC_UA, width: 1728 });
+  stubHostname("127.0.0.1");
+  const first = mockFetch(null, {});
+  vi.stubGlobal("fetch", first.fn);
+
+  const { getByRole, unmount } = chat();
+
+  // the chip shows what the engine currently believes: the studio guess
+  const chip = getByRole("button", { name: /owner device/i });
+  expect(chip).toHaveTextContent("studio");
+
+  // pin the truth through the picker
+  fireEvent.click(chip);
+  fireEvent.click(getByRole("menuitemradio", { name: /^laptop$/ }));
+  expect(window.localStorage.getItem(OVERRIDE_KEY)).toBe("laptop");
+  // same mount, the chip now shows the pinned tag
+  expect(getByRole("button", { name: /owner device/i })).toHaveTextContent(
+    "laptop",
+  );
+  unmount();
+  cleanup();
+
+  // fresh mount, same loopback shape: the run body carries the pin
+  window.history.replaceState({}, "", "/cockpit/honey?q=from%20the%20laptop");
+  const second = mockFetch(null, {});
+  vi.stubGlobal("fetch", second.fn);
+  chat();
+
+  await waitFor(() => expect(second.runPayloads.length).toBeGreaterThan(0));
+  expect(second.runPayloads[0]?.forwardedProps).toMatchObject({
+    device: "laptop",
+  });
   window.history.replaceState({}, "", "/");
 });

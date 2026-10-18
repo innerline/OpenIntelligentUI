@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopilotChat, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import { uuid } from "@/lib/uuid";
-import { detectOwnerDevice } from "@/lib/owner-device";
+import { detectOwnerDevice, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice } from "@/lib/owner-device";
+import { OwnerDeviceChip } from "@/components/cockpit/owner-device-chip";
+import { isVisualPointer, publishVisual } from "@/lib/visual-pointer";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
 import { AnswerMarkdown } from "@/components/chat/answer-markdown";
 import { useEngineStatuses } from "./engine-status";
@@ -41,7 +43,11 @@ function loadThreadId(agentId: string): string {
 }
 
 // One restored turn from the adapter's GET /threads/{id}.
-type TranscriptMessage = { role: string; content: string };
+type TranscriptMessage = {
+  role: string;
+  content: string;
+  visual?: unknown; // VISUAL pointer the adapter parsed off this reply
+};
 
 export function EngineChat({
   agentId,
@@ -67,8 +73,15 @@ export function EngineChat({
   // Device tag (kanban/device-input-matrix): this send path calls
   // agent.runAgent() DIRECTLY, which bypasses the provider's
   // `properties` merge — so the tag is passed explicitly here too.
-  // Coarse, once per mount, same detector the provider uses.
-  const device = useMemo(() => detectOwnerDevice(), []);
+  // Re-pinnable mid-mount (2026-10-18 loopback misfire, owner on his
+  // laptop tagged studio): the header's device chip pins the truth and
+  // this listener re-reads it, so the NEXT run carries the new tag.
+  const [device, setDevice] = useState<OwnerDevice>(() => detectOwnerDevice());
+  useEffect(() => {
+    const onChange = () => setDevice(detectOwnerDevice());
+    window.addEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
+  }, []);
   // Read once per mount — survives tab discard via localStorage, so the
   // remounted page rejoins the SAME engine thread instead of orphaning it.
   const [threadId, setThreadId] = useState(() => loadThreadId(agentId));
@@ -106,6 +119,10 @@ export function EngineChat({
   // History restore: after a remount the chat's message list is empty
   // (CopilotKit keeps threads in memory only), so pull the transcript the
   // adapter recorded for this thread. Guarded to never seed mid-run.
+  // The LAST assistant turn's visual pointer (if the adapter recorded
+  // one) republishes to the pointing sidebar — a remounted page shows
+  // what the last answer pointed at, null meaning "pointed at nothing"
+  // (never a stale older artifact).
   const restore = useCallback(() => {
     if (agent.messages.length > 0 || agent.isRunning) return;
     fetch(
@@ -122,6 +139,13 @@ export function EngineChat({
           mapped.push({ id: `t${idx}`, role: m.role, content: m.content });
         });
         if (mapped.length > 0) agent.setMessages(mapped);
+        for (let i = turns.length - 1; i >= 0; i--) {
+          if (turns[i].role === "assistant") {
+            const carried: unknown = turns[i].visual;
+            publishVisual(agentId, isVisualPointer(carried) ? carried : null);
+            break;
+          }
+        }
       })
       .catch(() => {}); // best-effort: the chat works without history
   }, [agent, agentId, threadId]);
@@ -165,10 +189,25 @@ export function EngineChat({
   useEffect(() => {
     const subscription = agent.subscribe({
       onRunInitialized: () => setError(null),
-      onRunFinishedEvent: () => setError(null),
+      // Visual pointer slice (kanban/device-input-matrix slice 2): the
+      // adapter strips the VISUAL machine line from the reply and parks
+      // the parsed pointer on RUN_FINISHED's result — AG-UI's run-result
+      // metadata lane, the engine->cockpit mirror of the device tag.
+      // null = this reply pointed at nothing; the sidebar must not
+      // linger on an older artifact. Agent-level subscription, so BOTH
+      // send paths (provider properties + the direct runAgent) report.
+      onRunFinishedEvent: ({
+        event,
+      }: {
+        event: { result?: { visual?: unknown } };
+      }) => {
+        setError(null);
+        const raw = event?.result?.visual;
+        publishVisual(agentId, isVisualPointer(raw) ? raw : null);
+      },
     });
     return () => subscription.unsubscribe();
-  }, [agent]);
+  }, [agent, agentId]);
 
   // ?q= deep link — send once, then strip the param so a refresh asks
   // nothing. Same path a human takes (addMessage + runAgent), so thread
@@ -204,6 +243,10 @@ export function EngineChat({
       <div className="cockpit-chat-head">
         <h1>{title}</h1>
         <span className="cockpit-chat-sub">{endpoint}</span>
+        {/* Device chip (owner refinement 2026-10-18): shows the tag being
+            sent; click to pin phone/ipad/laptop/studio — the pin beats the
+            loopback heuristic that misfired studio-at-laptop. */}
+        <OwnerDeviceChip />
       </div>
       {notice && (
         <div className="cockpit-chat-banner warn" role="note">

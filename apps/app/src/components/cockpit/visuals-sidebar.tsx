@@ -3,6 +3,7 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { PlexPanel } from "@/components/kplex/plex-panel";
+import { PointedVisual } from "@/components/cockpit/pointed-visual";
 import { doorUrl } from "@/lib/vault-links";
 import "./cockpit.css";
 
@@ -16,6 +17,12 @@ import "./cockpit.css";
 // component state, so nothing re-renders on mount cascades. Old
 // /cockpit/visuals links land on Honey with the sidebar forced open
 // (?visuals=1).
+//
+// 2026-10-18 slice 2 (owner refinement): the sidebar's FIRST section is
+// Honey's pointing surface — whatever her latest answer's VISUAL line
+// pointed at renders above the walk; the owner clicks through to the
+// full view. Per-persona: the slot follows whichever chat surface is on
+// stage.
 
 const STORAGE_KEY = "cockpit:visuals-open";
 
@@ -198,6 +205,7 @@ export function VisualsSidebar() {
             collapse ▸
           </button>
         </div>
+        <PointedVisual agent={pathname.includes("/larry") ? "larry" : "honey"} />
         <div className="sidebar-plex">
           <PlexPanel variant="stage" />
         </div>
