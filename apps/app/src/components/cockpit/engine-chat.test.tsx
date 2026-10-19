@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, screen } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { Providers } from "@/app/providers";
@@ -464,5 +464,48 @@ it("sources the tag so the adapter can tell pin from guess", async () => {
     device: "laptop",
     deviceSource: "pin",
   });
+  window.history.replaceState({}, "", "/");
+});
+
+// --- Test-mode isolation (unified-honey K1 go-live gate, 2026-10-19) ---
+// ?test=1 mounts the SANDBOX lane: the run is flagged testMode (the
+// adapter quarantines it — never the owner's thread, session or
+// transcript), the thread is a memory-only test- mint, the owner's
+// localStorage pin is untouched, the owner's anchor is never fetched or
+// adopted, and the surface says TEST plainly.
+
+it("test mode flags the run, mints unpinned, never reads the anchor", async () => {
+  window.localStorage.setItem(PIN_KEY, "web-owner-pin");
+  const { fn, threadFetches, runPayloads } = mockFetch("web-owner-anchor", {
+    "web-owner-anchor": [{ role: "user", content: "owner business" }],
+  });
+  vi.stubGlobal("fetch", fn);
+
+  window.history.replaceState(
+    {},
+    "",
+    "/cockpit/honey?test=1&q=probe%20the%20lane",
+  );
+  chat();
+
+  await waitFor(() => expect(runPayloads.length).toBeGreaterThan(0));
+  const run = runPayloads[0];
+  // the flag is the load-bearing guarantee: the adapter quarantines on it
+  // regardless of what thread id the client holds
+  expect(run.forwardedProps).toMatchObject({ testMode: true });
+  // the owner's pin is untouched; the test thread is memory-only
+  expect(window.localStorage.getItem(PIN_KEY)).toBe("web-owner-pin");
+  // the sandbox mount never restored — or even asked for — the owner's
+  // anchor thread or its history
+  expect(
+    fn.mock.calls.some(([u]) =>
+      String(u).startsWith("/api/cockpit/thread-current"),
+    ),
+  ).toBe(false);
+  expect(
+    threadFetches.every((u) => !u.includes("thread=web-owner")),
+  ).toBe(true);
+  // the surface says TEST plainly
+  expect(screen.getByText(/TEST MODE/)).toBeInTheDocument();
   window.history.replaceState({}, "", "/");
 });

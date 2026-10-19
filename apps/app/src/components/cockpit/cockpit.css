@@ -176,6 +176,14 @@ html.dark .cockpit-app {
 }
 
 .cockpit-chat-banner.warn { color: var(--ck-warn); }
+/* Test-mode isolation (unified-honey K1 gate): the sandbox banner uses
+   the accent family — "this surface is deliberately different", not a
+   warning and not an error. */
+.cockpit-chat-banner.test {
+  color: var(--ck-accent);
+  border-color: var(--ck-accent-border);
+  background: var(--ck-accent-bg);
+}
 .cockpit-chat-banner .dash-dot { flex-shrink: 0; }
 
 .cockpit-chat .chat-content {

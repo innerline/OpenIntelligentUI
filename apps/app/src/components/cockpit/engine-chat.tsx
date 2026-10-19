@@ -93,9 +93,26 @@ export function EngineChat({
     window.addEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
     return () => window.removeEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
   }, []);
+  // Test-mode isolation (unified-honey K1 go-live gate, 2026-10-19):
+  // ?test=1 mounts the SANDBOX lane. The adapter quarantines flagged runs
+  // (forwardedProps.testMode, and any test- namespace thread even without
+  // the flag), but this mount also keeps its SIDE clean: it never adopts
+  // the owner's anchor, never restores his history, never touches the
+  // localStorage pin — it mints a memory-only test- thread per mount and
+  // wears a visible TEST banner.
+  const isTestMode = useMemo(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("test") === "1";
+    } catch {
+      return false;
+    }
+  }, []);
   // Read once per mount — survives tab discard via localStorage, so the
   // remounted page rejoins the SAME engine thread instead of orphaning it.
-  const [threadId, setThreadId] = useState(() => loadThreadId(agentId));
+  // Test mode: memory-only mint (never pinned, never restored from).
+  const [threadId, setThreadId] = useState(() =>
+    isTestMode ? "test-" + uuid() : loadThreadId(agentId),
+  );
 
   // Cross-device rejoin (kanban/cockpit-thread-continuity, 2026-10-18):
   // the localStorage pin is per BROWSER — phone and laptop each minted
@@ -106,6 +123,7 @@ export function EngineChat({
   // anchor, so a device that drifts rejoins on its next mount and the
   // conversation converges to one thread without a mid-chat yank.
   useEffect(() => {
+    if (isTestMode) return; // sandbox lane never adopts the owner's anchor
     let cancelled = false;
     fetch(`/api/cockpit/thread-current?agent=${encodeURIComponent(agentId)}`)
       .then((res) => (res.ok ? res.json() : Promise.resolve({ threadId: null })))
@@ -125,7 +143,7 @@ export function EngineChat({
     return () => {
       cancelled = true;
     };
-  }, [agent, agentId, threadId]);
+  }, [agent, agentId, threadId, isTestMode]);
 
   // History restore: after a remount the chat's message list is empty
   // (CopilotKit keeps threads in memory only), so pull the transcript the
@@ -135,6 +153,7 @@ export function EngineChat({
   // what the last answer pointed at, null meaning "pointed at nothing"
   // (never a stale older artifact).
   const restore = useCallback(() => {
+    if (isTestMode) return; // sandbox lane: no owner history, ever
     if (agent.messages.length > 0 || agent.isRunning) return;
     fetch(
       `/api/cockpit/thread-messages?agent=${encodeURIComponent(agentId)}&thread=${encodeURIComponent(threadId)}`,
@@ -159,7 +178,7 @@ export function EngineChat({
         }
       })
       .catch(() => {}); // best-effort: the chat works without history
-  }, [agent, agentId, threadId]);
+  }, [agent, agentId, threadId, isTestMode]);
 
   useEffect(() => {
     restore();
@@ -181,11 +200,21 @@ export function EngineChat({
     (text: string) => {
       if (agent.isRunning) return;
       agent.addMessage({ id: uuid(), role: "user", content: text });
-      agent.runAgent({ forwardedProps: { ...deviceTag } }).catch(() =>
-        setError("The engine could not be reached. Check the adapter, then retry."),
-      );
+      agent
+        .runAgent({
+          forwardedProps: {
+            ...deviceTag,
+            // Test-mode isolation (unified-honey K1 gate): the flag puts
+            // the run in the adapter's sandbox lane — the owner's thread,
+            // session and transcript are unreachable from it.
+            ...(isTestMode ? { testMode: true } : {}),
+          },
+        })
+        .catch(() =>
+          setError("The engine could not be reached. Check the adapter, then retry."),
+        );
     },
-    [agent, deviceTag],
+    [agent, deviceTag, isTestMode],
   );
 
   // "Ask Honey about this node" from the docked Visuals sidebar (same
@@ -259,6 +288,12 @@ export function EngineChat({
             loopback heuristic that misfired studio-at-laptop. */}
         <OwnerDeviceChip />
       </div>
+      {isTestMode && (
+        <div className="cockpit-chat-banner test" role="status">
+          <span className="dash-dot dot-off" aria-hidden />
+          TEST MODE — sandbox thread; the owner&apos;s conversation is untouched.
+        </div>
+      )}
       {notice && (
         <div className="cockpit-chat-banner warn" role="note">
           <span className="dash-dot dot-off" aria-hidden />
