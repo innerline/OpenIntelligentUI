@@ -46,6 +46,21 @@ class PeerTaggedHttpAgent extends HttpAgent {
     super(config);
   }
 
+  // @ag-ui's clone() rebuilds the agent without ever calling the subclass
+  // constructor (AbstractAgent.clone: Object.create(prototype) + a copy of
+  // ITS OWN known fields; HttpAgent.clone then re-sets url/headers only).
+  // The CopilotKit runtime clones the registered agent per proxied run
+  // (ProxiedCopilotRuntimeAgent.clone -> delegate.clone()), so a clone that
+  // didn't carry `client` reached requestInit below with it undefined —
+  // "Cannot read properties of undefined (reading 'peer')" as RUN_ERROR,
+  // the run dying inside the runtime before the adapter ever saw it.
+  // Carry the client across the clone (found live 2026-10-19).
+  override clone(): HttpAgent {
+    const copy = super.clone() as PeerTaggedHttpAgent;
+    copy.client = this.client;
+    return copy;
+  }
+
   protected override requestInit(input: RunAgentInput): RequestInit {
     const forwarded = (input.forwardedProps ?? {}) as Record<string, unknown>;
     input.forwardedProps = {

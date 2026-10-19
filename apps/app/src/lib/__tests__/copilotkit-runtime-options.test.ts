@@ -156,6 +156,24 @@ describe("server-side device context stamping", () => {
     const props = forwardedPropsOf(requestInitOf(options.agents.honey, input));
     expect(props.devicePeer).toBe("100.127.208.46");
   });
+
+  // The runtime clones the registered agent per proxied run
+  // (ProxiedCopilotRuntimeAgent.clone -> delegate.clone()); @ag-ui's
+  // clone never calls the subclass constructor, so the peer/UA payload
+  // must be carried across explicitly — an un-maintained clone died in
+  // requestInit reading `.peer` of undefined (RUN_ERROR, run never left
+  // the runtime; found live 2026-10-19).
+  it("stamps the clone too — the runtime runs a CLONE of the registered agent", () => {
+    const options = buildRuntimeOptions({
+      clientPeer: "100.127.208.46",
+      clientUserAgent: MAC_UA,
+    });
+    const clone = options.agents.honey.clone() as HttpAgent;
+    expect(clone).not.toBe(options.agents.honey);
+    const props = forwardedPropsOf(requestInitOf(clone, runInput()));
+    expect(props.devicePeer).toBe("100.127.208.46");
+    expect(props.deviceUserAgent).toBe(MAC_UA);
+  });
 });
 
 describe("extractClientPeer", () => {
