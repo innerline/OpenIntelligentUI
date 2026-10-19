@@ -15,7 +15,7 @@
 
 export type VisualPointer = { kind: "map" | "plex" | "file"; path: string };
 
-export type VisualAgent = "honey" | "larry";
+export type VisualAgent = "honey" | "larry" | "pi";
 
 // The chat surfaces dispatch; the docked sidebar listens (same pattern
 // as the existing "cockpit-ask-honey" hand-off).

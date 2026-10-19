@@ -57,7 +57,7 @@ export function EngineChat({
   placeholder,
   notice,
 }: {
-  agentId: "honey" | "larry";
+  agentId: "honey" | "larry" | "pi";
   title: string;
   endpoint: string;
   welcome: string;

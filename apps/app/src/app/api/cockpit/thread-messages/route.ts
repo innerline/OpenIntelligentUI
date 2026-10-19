@@ -1,5 +1,18 @@
 import { NextResponse } from "next/server";
-import { HONEY_AGUI_URL, LARRY_AGUI_URL } from "@/lib/copilotkit-runtime-options";
+import {
+  HONEY_AGUI_URL,
+  LARRY_AGUI_URL,
+  PI_AGUI_URL,
+} from "@/lib/copilotkit-runtime-options";
+
+// pi rides the tailnet adapter (pi-platform smallest visible loop, gate
+// 2026-10-19). Its /threads/{id} endpoint is the credited fast-follow —
+// until it lands, the catch below answers the graceful empty fallback.
+const AGENT_BASES: Record<"honey" | "larry" | "pi", string> = {
+  honey: HONEY_AGUI_URL,
+  larry: LARRY_AGUI_URL,
+  pi: PI_AGUI_URL,
+};
 
 // Cockpit thread history — the adapters keep a per-thread transcript
 // (runtime/agui_transcripts.json) and serve it at GET /threads/{id}. The
@@ -14,13 +27,13 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const agent = searchParams.get("agent");
   const thread = searchParams.get("thread");
-  if ((agent !== "honey" && agent !== "larry") || !thread) {
+  if ((agent !== "honey" && agent !== "larry" && agent !== "pi") || !thread) {
     return NextResponse.json(
-      { error: "expected ?agent=honey|larry&thread=<threadId>" },
+      { error: "expected ?agent=honey|larry|pi&thread=<threadId>" },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
-  const base = agent === "honey" ? HONEY_AGUI_URL : LARRY_AGUI_URL;
+  const base = AGENT_BASES[agent];
   try {
     const upstream = await fetch(
       `${base}threads/${encodeURIComponent(thread)}`,

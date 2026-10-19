@@ -8,7 +8,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 // banners read the same context).
 
 export type EngineStatus = { ok: boolean; detail: string };
-export type EngineStatuses = { honey: EngineStatus; larry: EngineStatus };
+export type EngineStatuses = { honey: EngineStatus; larry: EngineStatus; pi: EngineStatus };
 
 const EngineStatusContext = createContext<EngineStatuses | null>(null);
 
@@ -38,7 +38,7 @@ export function EngineStatusProvider({ children }: { children: React.ReactNode }
   // a fresh-but-identical object every 30s was re-rendering every consumer
   // mid-typing, which Safari punishes by killing dictation composition
   // (owner: "types ~20 characters then resets", 2026-10-12).
-  const value = useMemo(() => statuses, [statuses?.honey.ok, statuses?.honey.detail, statuses?.larry.ok, statuses?.larry.detail]); // eslint-disable-line react-hooks/exhaustive-deps
+  const value = useMemo(() => statuses, [statuses?.honey.ok, statuses?.honey.detail, statuses?.larry.ok, statuses?.larry.detail, statuses?.pi.ok, statuses?.pi.detail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <EngineStatusContext.Provider value={value}>{children}</EngineStatusContext.Provider>

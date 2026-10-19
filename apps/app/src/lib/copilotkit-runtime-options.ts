@@ -82,12 +82,15 @@ export interface RuntimeOptionsEnv {
   clientUserAgent?: string | null;
 }
 
-// Cockpit engine surfaces (Honey / Larry) — plain AG-UI endpoints on the
-// Studio (honey_agui + larry-agui adapters), the same wire OpenBot's
+// Cockpit engine surfaces (Honey / Larry / Pi) — plain AG-UI endpoints on the
+// Studio (honey_agui + larry-agui + pi_agui adapters), the same wire OpenBot's
 // remote-ag-ui bots speak: POST RunAgentInput -> SSE event stream.
 // Env-overridable so the same build runs against local dev adapters.
 export const HONEY_AGUI_URL = process.env.HONEY_AGUI_URL || "http://127.0.0.1:8126/";
 export const LARRY_AGUI_URL = process.env.LARRY_AGUI_URL || "http://127.0.0.1:8127/";
+// Pi seat (pi-platform smallest visible loop) — tailnet-only bind per the
+// locked gate bar; launchd-supervised (com.mwp.pi-agui).
+export const PI_AGUI_URL = process.env.PI_AGUI_URL || "http://100.81.213.106:8129/";
 
 // Normalize Render's fromService hostport (bare host:port) into a full URL
 export function normalizeLanggraphUrl(raw?: string): string {
@@ -113,6 +116,10 @@ export function buildRuntimeOptions(env: RuntimeOptionsEnv) {
       ),
       larry: new PeerTaggedHttpAgent(
         { url: LARRY_AGUI_URL },
+        { peer: env.clientPeer, userAgent: env.clientUserAgent },
+      ),
+      pi: new PeerTaggedHttpAgent(
+        { url: PI_AGUI_URL },
         { peer: env.clientPeer, userAgent: env.clientUserAgent },
       ),
     },

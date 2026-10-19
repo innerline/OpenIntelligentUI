@@ -15,6 +15,7 @@ import "./cockpit.css";
 const TABS = [
   { href: "/cockpit/honey", label: "Honey", engine: "honey" as const },
   { href: "/cockpit/larry", label: "Larry", engine: "larry" as const },
+  { href: "/cockpit/pi", label: "Pi", engine: "pi" as const },
   { href: "/cockpit/boards", label: "Boards", engine: null },
 ];
 

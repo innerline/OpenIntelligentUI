@@ -1,5 +1,18 @@
 import { NextResponse } from "next/server";
-import { HONEY_AGUI_URL, LARRY_AGUI_URL } from "@/lib/copilotkit-runtime-options";
+import {
+  HONEY_AGUI_URL,
+  LARRY_AGUI_URL,
+  PI_AGUI_URL,
+} from "@/lib/copilotkit-runtime-options";
+
+// pi rides the tailnet adapter (pi-platform smallest visible loop, gate
+// 2026-10-19). Its /thread/current endpoint is the credited fast-follow —
+// until it lands, the catch below answers the graceful null fallback.
+const AGENT_BASES: Record<"honey" | "larry" | "pi", string> = {
+  honey: HONEY_AGUI_URL,
+  larry: LARRY_AGUI_URL,
+  pi: PI_AGUI_URL,
+};
 
 // Cockpit thread anchor — the adapters answer GET /thread/current with the
 // persona's most recently active thread (derived from their transcript
@@ -15,13 +28,13 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const agent = searchParams.get("agent");
-  if (agent !== "honey" && agent !== "larry") {
+  if (agent !== "honey" && agent !== "larry" && agent !== "pi") {
     return NextResponse.json(
-      { error: "expected ?agent=honey|larry" },
+      { error: "expected ?agent=honey|larry|pi" },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
-  const base = agent === "honey" ? HONEY_AGUI_URL : LARRY_AGUI_URL;
+  const base = AGENT_BASES[agent];
   try {
     const upstream = await fetch(`${base}thread/current`, {
       cache: "no-store",
