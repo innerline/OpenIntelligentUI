@@ -5,7 +5,7 @@ import { CopilotChat, useAgent, useCopilotKit, CopilotChatAssistantMessage } fro
 import { uuid } from "@/lib/uuid";
 import { detectOwnerDevice, getOwnerDeviceSource, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice, type OwnerDeviceSource } from "@/lib/owner-device";
 import { OwnerDeviceChip } from "@/components/cockpit/owner-device-chip";
-import { AssistantMessageWithSpeech, SpeakingChip, TtsModeChip } from "@/components/cockpit/tts-speech";
+import { AssistantMessageWithSpeech, SpeakingChip, TtsErrorChip, TtsModeChip } from "@/components/cockpit/tts-speech";
 import { cancelSpeech, maybeAutoSpeak, unlockSpeech } from "@/lib/honey-tts";
 import { isVisualPointer, publishVisual } from "@/lib/visual-pointer";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
@@ -407,9 +407,12 @@ export function EngineChat({
             loopback heuristic that misfired studio-at-laptop. */}
         <OwnerDeviceChip />
         {/* Voice output (iPhone contract, slice 3): mode toggle + the
-            stop chip that appears only while a reply is being spoken. */}
+            stop chip that appears only while a reply is being spoken.
+            TtsErrorChip (2026-10-20): a voice failure is VISIBLE — the
+            phone incident must never repeat silently. */}
         <TtsModeChip />
         <SpeakingChip />
+        <TtsErrorChip />
       </div>
       {isTestMode && (
         <div className="cockpit-chat-banner test" role="status">

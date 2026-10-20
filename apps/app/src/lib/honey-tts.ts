@@ -26,6 +26,12 @@
 //      into sentence-boundary pieces of ≤ SPEECH_CHUNK_CHARS and queued;
 //      short utterances chain through the browser's native queue.
 //   3. a new run (or the stop chip) cancels whatever is still speaking.
+//   4. the SYSTEM-DEFAULT voice can fail silently on iOS Safari (owner
+//      phone 2026-10-20, after the primer fix: speaking=true, no
+//      audio). Every reply picks an explicit voice instead — see
+//      pickVoice() — and utterance errors are reported to subscribers
+//      (subscribeTtsErrors) so the cockpit can show them: no silent
+//      failures.
 
 import type { OwnerDevice } from "@/lib/owner-device";
 
@@ -51,6 +57,22 @@ const SPEECH_CAP_SUFFIX = " Message continues on screen.";
 
 // iOS stalls on long single utterances; short chained ones survive.
 export const SPEECH_CHUNK_CHARS = 200;
+
+// Voice picking (quirk 4). Replies are English; voices are matched by
+// lang prefix, on-device ones preferred, then the known-good iOS
+// names in the order the owner's phone answered best.
+export const SPEECH_LANG_PREFIX = "en";
+const PREFERRED_VOICE_NAMES: readonly string[] = [
+  "Samantha",
+  "Ava",
+  "Allison",
+  "Nick",
+];
+
+// Chrome/iOS load the voice list asynchronously — getVoices() returns
+// [] until voiceschanged fires (and some engines never fire it), so
+// the picker re-checks once after this long even without the event.
+const VOICES_WAIT_MS = 1500;
 
 export function isTtsMode(value: unknown): value is TtsMode {
   return (
@@ -195,6 +217,120 @@ function getSynth(): SpeechSynthesis | null {
   return "speechSynthesis" in window ? window.speechSynthesis : null;
 }
 
+// Pick the voice a reply is spoken with, best-first: (a) voices whose
+// lang matches the reply language prefix, (b) localService ones among
+// them, (c) the known-good iOS names in order, then any other
+// matching voice, (d) any voice at all when none match the language.
+// null = nothing to pick from — leave utterance.voice unset and let
+// the system default answer; speech is never blocked on the picker.
+export function pickVoice(
+  voices: readonly SpeechSynthesisVoice[],
+): SpeechSynthesisVoice | null {
+  if (!voices.length) return null;
+  const langMatches = voices.filter((v) =>
+    (v.lang ?? "").toLowerCase().startsWith(SPEECH_LANG_PREFIX),
+  );
+  const local = langMatches.filter((v) => v.localService);
+  const pool = local.length ? local : langMatches;
+  for (const name of PREFERRED_VOICE_NAMES) {
+    const hit = pool.find((v) => v.name === name);
+    if (hit) return hit;
+  }
+  return pool[0] ?? voices[0] ?? null;
+}
+
+// The picked voice for the CURRENT synth, cached. getVoices() is
+// usually empty on the first call (iOS/Chrome load the list late), so
+// the pick is retried when voiceschanged fires — or once after
+// VOICES_WAIT_MS on engines that never fire it. Keyed on the synth
+// instance: a fresh engine (new page, remount) re-picks from scratch.
+let voicePick: {
+  synth: SpeechSynthesis;
+  voice: SpeechSynthesisVoice | null;
+} | null = null;
+
+function ensureVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
+  if (voicePick?.synth === synth) return voicePick.voice;
+  voicePick = { synth, voice: null };
+  const readVoices = (): readonly SpeechSynthesisVoice[] => {
+    try {
+      const list =
+        typeof synth.getVoices === "function" ? synth.getVoices() : [];
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  };
+  const repick = () => {
+    if (voicePick?.synth !== synth || voicePick.voice) return;
+    voicePick.voice = pickVoice(readVoices());
+  };
+  repick(); // usually empty on iOS — fine, never blocks speech
+  if (!voicePick.voice) {
+    if (typeof synth.addEventListener === "function") {
+      try {
+        synth.addEventListener("voiceschanged", repick);
+      } catch {
+        // not an EventTarget after all: the timeout below still re-picks
+      }
+    }
+    setTimeout(repick, VOICES_WAIT_MS); // backstop — some engines never fire
+  }
+  return voicePick.voice;
+}
+
+// --- voice errors (the cockpit renders them — no silent failures) ---
+
+// Deliberate stops (the stop chip, a new run's reset) also fire
+// onerror on some engines with these types — not failures, never
+// surfaced to the owner.
+const BENIGN_ERROR_TYPES: ReadonlySet<string> = new Set([
+  "canceled",
+  "interrupted",
+]);
+
+// How long the cockpit's error chip stays up before fading (the
+// failure is visible, not sticky).
+export const TTS_ERROR_FADE_MS = 12_000;
+
+// What an utterance error hands the cockpit: the engine's error type
+// ("synthesis-failed", "voice-unavailable", …) or "unknown", plus the
+// engine's message when it gave one.
+export interface TtsError {
+  type: string;
+  message: string;
+}
+
+const ttsErrorListeners = new Set<(error: TtsError) => void>();
+
+// Subscribe to spoken-reply failures — the cockpit's error chip.
+// Same grammar as subscribeSpeaking.
+export function subscribeTtsErrors(
+  listener: (error: TtsError) => void,
+): () => void {
+  ttsErrorListeners.add(listener);
+  return () => {
+    ttsErrorListeners.delete(listener);
+  };
+}
+
+function readErrorEvent(event: unknown): TtsError {
+  if (event && typeof event === "object") {
+    const { error, message } = event as { error?: unknown; message?: unknown };
+    return {
+      type: typeof error === "string" && error ? error : "unknown",
+      message: typeof message === "string" ? message : "",
+    };
+  }
+  return { type: "unknown", message: "" };
+}
+
+function reportTtsError(event: unknown): void {
+  const error = readErrorEvent(event);
+  if (BENIGN_ERROR_TYPES.has(error.type)) return; // our own cancel
+  for (const listener of ttsErrorListeners) listener(error);
+}
+
 // Speak one reply: clean → cap → chunk → queue. Mode off never speaks
 // (the guard lives here so every entry path inherits it). The session
 // is reset (cancel) before every reply — iOS audio sessions can carry
@@ -208,16 +344,27 @@ export function speakReply(raw: string): void {
   const text = capForSpeech(cleanForSpeech(raw));
   if (!text) return;
   const chunks = chunkForSpeech(text);
+  // Quirk 4: the system default can be unplayable — pin an explicit
+  // voice when one is loaded; null (list still empty) means the system
+  // default, which still beats not speaking at all.
+  const voice = ensureVoice(synth);
   let queued = false;
   chunks.forEach((chunk, i) => {
     const utterance = new SpeechSynthesisUtterance(chunk);
     utterance.volume = 1; // explicit — never inherit the primer's 0.01
+    if (voice) utterance.voice = voice;
     if (i === chunks.length - 1) {
       utterance.onend = () => setSpeaking(false);
-      utterance.onerror = () => setSpeaking(false);
+      utterance.onerror = (event) => {
+        reportTtsError(event); // visible — never a silent failure again
+        setSpeaking(false);
+      };
     } else {
       // a failed mid-reply chunk aborts the whole playback cleanly
-      utterance.onerror = () => cancelSpeech();
+      utterance.onerror = (event) => {
+        reportTtsError(event);
+        cancelSpeech();
+      };
     }
     try {
       synth.speak(utterance);

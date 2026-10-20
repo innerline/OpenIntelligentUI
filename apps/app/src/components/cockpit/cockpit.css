@@ -849,6 +849,20 @@ html.dark .cockpit-app {
   opacity: 1;
 }
 
+/* A spoken-reply failure (2026-10-20 phone incident): warn-tinted,
+   not clickable — it states the failure and fades after 12s. */
+.tts-error-chip {
+  align-self: center;
+  flex-shrink: 0;
+  border-color: var(--ck-warn);
+  color: var(--ck-warn);
+  cursor: default;
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tts-play-btn {
   font: inherit;
   font-size: 13px;

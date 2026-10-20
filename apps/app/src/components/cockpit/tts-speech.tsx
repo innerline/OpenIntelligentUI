@@ -12,8 +12,11 @@ import {
   setTtsMode,
   speakReply,
   subscribeSpeaking,
+  subscribeTtsErrors,
+  TTS_ERROR_FADE_MS,
   HONEY_TTS_MODE_CHANGED_EVENT,
   TTS_MODES,
+  type TtsError,
   type TtsMode,
 } from "@/lib/honey-tts";
 
@@ -29,6 +32,10 @@ import {
 //      grammar next to it in the chat head.
 //   3. SpeakingChip — the visible "speaking" state: a stop chip that
 //      kills playback on tap. Renders nothing while silent.
+//   4. TtsErrorChip — a spoken-reply failure, visible (owner phone
+//      2026-10-20: speaking=true, no audio — never again silent).
+//      Same chip grammar as the stop chip beside it; fades after
+//      TTS_ERROR_FADE_MS.
 
 export function AssistantMessageWithSpeech(
   props: CopilotChatAssistantMessageProps,
@@ -180,5 +187,33 @@ export function SpeakingChip() {
     >
       🔊 stop
     </button>
+  );
+}
+
+// A spoken-reply failure (lib quirk 4): renders beside the stop chip
+// in the same grammar, `voice error: <type or message>`, and fades
+// after TTS_ERROR_FADE_MS. The engine's own message is shown only
+// when it gave no error type.
+export function TtsErrorChip() {
+  const [error, setError] = useState<TtsError | null>(null);
+  useEffect(() => {
+    let fade: number | undefined;
+    const unsubscribe = subscribeTtsErrors((e) => {
+      setError(e);
+      window.clearTimeout(fade);
+      fade = window.setTimeout(() => setError(null), TTS_ERROR_FADE_MS);
+    });
+    return () => {
+      unsubscribe();
+      window.clearTimeout(fade);
+    };
+  }, []);
+  if (!error) return null;
+  const label =
+    error.type === "unknown" && error.message ? error.message : error.type;
+  return (
+    <span className="owner-device-chip-btn tts-error-chip" role="alert">
+      voice error: {label}
+    </span>
   );
 }
