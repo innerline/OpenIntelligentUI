@@ -8,7 +8,6 @@ import {
   isSpeaking,
   maybeAutoVoiceNote,
   playVoiceNote,
-  primeVoiceAudio,
   requestVoiceNote,
   resetVoiceLaneForTests,
   setTtsMode,
@@ -16,6 +15,7 @@ import {
   subscribeSpeaking,
   subscribeTtsErrors,
   subscribeVoiceNote,
+  unlockVoiceAudio,
   type TtsError,
   type TtsMode,
 } from "@/lib/honey-tts";
@@ -24,16 +24,23 @@ import {
 // voice contract). The Web Speech lane is GONE — four builds stayed
 // silent on the owner's phone; this suite pins its replacement: the
 // render request, the per-message chip state, the shared Audio
-// element's primer/play/stop lifecycle, and the mode × device matrix.
+// element's unlock/play/stop lifecycle (the iOS gesture state
+// machine), and the mode × device matrix.
 
 class FakeAudio {
   static instances: FakeAudio[] = [];
   src = "";
   paused = true;
+  // src at the moment of each play() call — the unlock plays silence,
+  // the note plays the render URL; this tells them apart.
+  playSrcs: string[] = [];
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onloadedmetadata: (() => void) | null = null;
-  play = vi.fn(() => Promise.resolve());
+  play = vi.fn((): Promise<void> => {
+    this.playSrcs.push(this.src);
+    return Promise.resolve();
+  });
   pause = vi.fn();
   load = vi.fn();
   removeAttribute = vi.fn((name: string) => {
@@ -158,10 +165,11 @@ it("a failed chip can be asked again; a ready one is not re-requested", async ()
   expect(calls).toBe(2); // ready short-circuits, no third request
 });
 
-// --- the phone auto lane ---
+// --- the phone auto lane (the iOS unlock state machine) ---
 
-it("maybeAutoVoiceNote renders + plays on the auto/phone corner", async () => {
+it("unlock before render: maybeAutoVoiceNote autoplays on the shared element", async () => {
   renderHandler = () => okRender("/api/cockpit/voice/audio?id=auto.m4a");
+  unlockVoiceAudio(); // the send tap, synchronously before the run
   maybeAutoVoiceNote("Phone reply.", "phone", "run-1");
   await vi.waitFor(() => {
     expect(FakeAudio.instances).toHaveLength(1);
@@ -170,8 +178,32 @@ it("maybeAutoVoiceNote renders + plays on the auto/phone corner", async () => {
   await vi.waitFor(() => {
     expect(el.src).toBe("/api/cockpit/voice/audio?id=auto.m4a");
   });
-  expect(el.play).toHaveBeenCalled();
+  expect(el.playSrcs).toEqual([
+    expect.stringMatching(/^data:audio\/wav;base64,/), // the unlock
+    "/api/cockpit/voice/audio?id=auto.m4a", // the reply's note
+  ]);
   expect(getVoiceNote("run-1")?.status).toBe("ready");
+});
+
+it("no unlock: the render lands ready but autoplay is never attempted — the chip answers", async () => {
+  renderHandler = () => okRender("/fallback.m4a");
+  maybeAutoVoiceNote("No tap reply.", "phone", "run-9");
+  await vi.waitFor(() => {
+    expect(getVoiceNote("run-9")?.status).toBe("ready");
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(FakeAudio.instances).toHaveLength(0); // no element, no play
+});
+
+it("off: nothing happens even after an earlier unlock", async () => {
+  unlockVoiceAudio(); // unlocked while auto, then the owner flips off
+  setTtsMode("off");
+  renderHandler = () => okRender("/never-off.m4a");
+  maybeAutoVoiceNote("Off after unlock.", "phone", "run-10");
+  await new Promise((r) => setTimeout(r, 10));
+  expect(FakeAudio.instances).toHaveLength(1); // the unlocked element
+  expect(FakeAudio.instances[0]!.play).toHaveBeenCalledTimes(1); // only the unlock's silence
+  expect(getVoiceNote("run-10")).toBeNull(); // never even rendered
 });
 
 it("maybeAutoVoiceNote stays silent off the corner", async () => {
@@ -192,6 +224,7 @@ it("maybeAutoVoiceNote stays silent off the corner", async () => {
 
 it("playing sets the speaking state; ended clears it", async () => {
   renderHandler = () => okRender("/p.m4a");
+  unlockVoiceAudio();
   maybeAutoVoiceNote("Speaking reply.", "phone", "run-5");
   await vi.waitFor(() => expect(isSpeaking()).toBe(true));
   const el = FakeAudio.instances[0]!;
@@ -201,10 +234,13 @@ it("playing sets the speaking state; ended clears it", async () => {
 
 it("an autoplay rejection is swallowed (the chip answers), an element error is not", async () => {
   renderHandler = () => okRender("/blocked.m4a");
+  unlockVoiceAudio(); // the element exists and is unlocked
   const el0 = FakeAudio.instances[0];
-  expect(el0).toBeUndefined();
+  expect(el0).toBeDefined();
   maybeAutoVoiceNote("Blocked reply.", "phone", "run-6");
-  await vi.waitFor(() => expect(FakeAudio.instances).toHaveLength(1));
+  await vi.waitFor(() =>
+    expect(FakeAudio.instances[0]?.src).toBe("/blocked.m4a"),
+  );
   const el = FakeAudio.instances[0]!;
   (el.play as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
     new Error("autoplay blocked"),
@@ -219,8 +255,9 @@ it("an autoplay rejection is swallowed (the chip answers), an element error is n
   expect(errors[0]?.type).toBe("voice-playback-failed");
 });
 
-it("cancelSpeech stops the element and clears speaking", async () => {
+it("cancelSpeech stops the element, never load()s it, and clears speaking", async () => {
   renderHandler = () => okRender("/c.m4a");
+  unlockVoiceAudio();
   maybeAutoVoiceNote("Cancel me.", "phone", "run-7");
   await vi.waitFor(() => expect(isSpeaking()).toBe(true));
   const speakingUpdates: boolean[] = [];
@@ -228,6 +265,9 @@ it("cancelSpeech stops the element and clears speaking", async () => {
   cancelSpeech();
   const el = FakeAudio.instances[0]!;
   expect(el.pause).toHaveBeenCalled();
+  // load() re-locks the element on iOS Safari — it must never run
+  // here, or the next reply's autoplay dies after every stop/new run.
+  expect(el.load).not.toHaveBeenCalled();
   expect(isSpeaking()).toBe(false);
   expect(speakingUpdates.at(-1)).toBe(false);
 });
@@ -238,26 +278,32 @@ it("off mode never plays, even with a ready note", async () => {
   expect(FakeAudio.instances).toHaveLength(0);
 });
 
-// --- the iOS gesture primer ---
+// --- the iOS gesture unlock ---
 
-it("primeVoiceAudio primes once with the shared element; off never primes", async () => {
-  primeVoiceAudio();
-  primeVoiceAudio(); // second tap: no-op
+it("unlockVoiceAudio plays-pauses-clears on the shared element; off never unlocks", async () => {
+  unlockVoiceAudio();
+  unlockVoiceAudio(); // every send tap re-unlocks — still ONE element
   expect(FakeAudio.instances).toHaveLength(1);
   const el = FakeAudio.instances[0]!;
-  expect(el.play).toHaveBeenCalledTimes(1);
-  expect(el.src).toMatch(/^data:audio\/wav;base64,/); // digital silence
+  expect(el.play).toHaveBeenCalledTimes(2); // one silence per tap
+  expect(el.playSrcs[0]).toMatch(/^data:audio\/wav;base64,/); // digital silence
+  expect(el.pause).toHaveBeenCalled(); // the stop lands in the same gesture
+  expect(el.src).toBe(""); // src reset — silence dropped, element kept
+  // a note in flight is never clobbered by a later tap's unlock
+  el.paused = false; // playing
+  unlockVoiceAudio();
+  expect(el.play).toHaveBeenCalledTimes(2);
   resetVoiceLaneForTests();
   FakeAudio.instances = [];
   setTtsMode("off");
-  primeVoiceAudio();
-  expect(FakeAudio.instances).toHaveLength(0); // off never primes
+  unlockVoiceAudio();
+  expect(FakeAudio.instances).toHaveLength(0); // off never unlocks
 });
 
-it("the primer's data URI is a real 50ms silent WAV", () => {
-  primeVoiceAudio();
+it("the unlock's data URI is a real 50ms silent WAV", () => {
+  unlockVoiceAudio();
   const el = FakeAudio.instances[0]!;
-  const b64 = el.src.split(",")[1] ?? "";
+  const b64 = (el.playSrcs[0] ?? "").split(",")[1] ?? "";
   const bin = atob(b64);
   expect(bin.length).toBe(444); // 44-byte header + 400 samples
   expect(bin.slice(0, 4)).toBe("RIFF");
@@ -268,8 +314,8 @@ it("the primer's data URI is a real 50ms silent WAV", () => {
   }
 });
 
-it("playback reuses the primed element (iOS unlock survives src swaps)", async () => {
-  primeVoiceAudio();
+it("playback reuses the unlocked element (iOS unlock survives src swaps)", async () => {
+  unlockVoiceAudio();
   renderHandler = () => okRender("/swap.m4a");
   maybeAutoVoiceNote("Same element.", "phone", "run-8");
   await vi.waitFor(() => expect(FakeAudio.instances[0]?.src).toBe("/swap.m4a"));

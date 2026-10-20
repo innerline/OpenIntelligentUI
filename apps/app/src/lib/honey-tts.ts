@@ -22,18 +22,25 @@
 //   off    — never renders, never plays, no buttons
 //
 // iOS posture (the whole point of the redesign):
-//   • Autoplay outside a user gesture is usually blocked, so a captured
-//     pointerdown (the send tap counts) primes ONE shared Audio
-//     element with a data-URI of digital silence. Digital silence —
-//     not a volume-0 trick: iOS ignores HTMLAudio.volume, and the old
-//     speechSynthesis zero-gain primer bug pinned the session mute.
-//     Priming once inside the gesture leaves the element (and the
-//     audio session) unlocked, and later src swaps can play.
-//   • If autoplay is still refused, play()'s rejection is swallowed —
-//     the voice-note chip on the reply stays as tap-to-play. That is
-//     the designed fallback, not an error.
+//   • Autoplay outside a user gesture is blocked — so the send tap
+//     itself unlocks the shared Audio element SYNCHRONOUSLY
+//     (unlockVoiceAudio, hooked at engine-chat's captured document
+//     pointerdown, which fires inside the tap before the send
+//     handler): play the 50ms silent-WAV data URI, pause inside the
+//     same gesture, reset src. Digital silence — not a volume-0
+//     trick: iOS ignores HTMLAudio.volume, and the zero-gain session
+//     pin killed the speechSynthesis lane. iOS registers the element
+//     (and the page's audio session) as gesture-unlocked the moment
+//     play() runs in the handler, so the later src swap + play() —
+//     after the render completes asynchronously — is permitted.
+//   • Without an unlock (programmatic runs: deep links), or when the
+//     engine still refuses the play, the note simply lands ready and
+//     the ▶ chip on the reply stays as tap-to-play. Blocked autoplay
+//     is expected behavior, NOT an error.
 //   • A new run (or the stop chip, or hiding the tab) stops playback —
-//     Honey never talks over herself.
+//     Honey never talks over herself. cancelSpeech pauses but never
+//     load()s the element: load() re-locks it on iOS Safari, and it
+//     fires between every send tap's unlock and the reply's play.
 //
 // Errors are NEVER silent: render failures reach subscribeTtsErrors
 // (the cockpit's TtsErrorChip) and the reply's own chip states
@@ -203,17 +210,17 @@ function reportTtsError(type: string, message: string): void {
 
 // --- the shared Audio element ---
 //
-// ONE element for the whole mount, created inside the owner's send
-// gesture (primeVoiceAudio). iOS unlocks the element/session in the
-// gesture; every later playback swaps src on the same element. jsdom
-// has no Audio — guarded, so tests stub it.
+// ONE element for the whole page session, created inside the owner's
+// send-tap gesture (unlockVoiceAudio). iOS unlocks the element/session
+// in the gesture; every later playback swaps src on the same element.
+// jsdom has no Audio — guarded, so tests stub it.
 
 type VoiceAudio = HTMLAudioElement & {
   play: () => Promise<void> | void;
 };
 
 let voiceAudio: VoiceAudio | null = null;
-let voiceAudioPrimed = false;
+let voiceAudioUnlocked = false;
 
 // Digital silence, ~50ms, 8-bit mono WAV as a data URI — built here
 // rather than pasted, so no transcription error can corrupt it. NOT
@@ -270,24 +277,35 @@ function makeAudioElement(): VoiceAudio | null {
   }
 }
 
-// iOS unlock: called from a captured pointerdown (the send tap
-// counts). Plays the silent primer once per session inside the
-// gesture so the element is unlocked when the reply finishes later.
-// Off mode never primes. Failure is swallowed — a blocked primer only
-// means autoplay will rely on the chip's tap-to-play.
-export function primeVoiceAudio(): void {
-  if (voiceAudioPrimed || getTtsMode() === "off") return;
+// iOS unlock (the classic pattern): called SYNCHRONOUSLY inside the
+// send-tap gesture — engine-chat hooks the captured document
+// pointerdown, which fires inside the tap before the send handler.
+// Set the silent primer src, play(), pause(), reset src: iOS
+// registers the element as gesture-unlocked the instant play() runs
+// in the handler, so the later src swap + play() — when the reply's
+// render completes asynchronously — is permitted. Re-runs on every
+// tap (idempotent, ~free): anything that re-locked the element (an
+// engine reset, a stray error) is healed by the next send tap, which
+// always precedes the reply it should auto-play. Off mode never
+// unlocks. A note already playing means the element is unlocked AND
+// in use — the unlock must never clobber playback. Failure is
+// swallowed — a refused unlock only means autoplay falls back to the
+// chip, whose tap is a gesture of its own.
+export function unlockVoiceAudio(): void {
+  if (getTtsMode() === "off") return;
   const el = voiceAudio ?? makeAudioElement();
   if (!el) return;
   voiceAudio = el;
-  voiceAudioPrimed = true;
+  if (!el.paused) return; // in use = already unlocked; don't clobber
   try {
     if (SILENT_PRIMER_URI) el.src = SILENT_PRIMER_URI;
     const p = el.play();
     if (p && typeof p.catch === "function") p.catch(() => {});
+    el.pause(); // land the stop inside the same gesture
+    el.removeAttribute("src"); // reset src — silence dropped, element kept
+    voiceAudioUnlocked = true;
   } catch {
-    // stay unprimed on the next tap… but the element still exists and
-    // a gesture-driven tap-to-play works regardless.
+    // refused: the element stays locked — the chip answers by tap
   }
 }
 
@@ -298,9 +316,9 @@ function ensureVoiceAudio(): VoiceAudio | null {
 }
 
 // Play a rendered voice note on the shared element. Outside a gesture
-// this is BEST-EFFORT: iOS may reject the play (the primer usually
-// prevents that); the rejection is swallowed because the chip on the
-// reply is the designed tap-to-play fallback, not an error. Real
+// this is BEST-EFFORT: iOS may reject the play (the send-tap unlock
+// usually prevents that); the rejection is swallowed because the chip on
+// the reply is the designed tap-to-play fallback, not an error. Real
 // element errors (decode/network) ARE reported — never silent.
 export function playVoiceNote(url: string): void {
   if (getTtsMode() === "off") return;
@@ -324,16 +342,18 @@ export function playVoiceNote(url: string): void {
 }
 
 // Stop immediately — the stop chip, a new run, and page-hide all call
-// this so a stale voice never talks over the next reply.
+// this so a stale voice never talks over the next reply. Pauses and
+// drops the src but NEVER calls load(): load() resets the element and
+// re-locks it on iOS Safari, and this runs on every new run — between
+// the send tap's unlock and the reply's auto-play.
 export function cancelSpeech(): void {
   const el = voiceAudio;
   if (el) {
     try {
       el.pause();
-      el.removeAttribute("src"); // drop the connection, keep the element
-      el.load?.();
+      el.removeAttribute("src"); // drop the content, keep the element
     } catch {
-      // some engines throw on load with no src
+      // engines can throw on odd states
     }
   }
   setSpeaking(false);
@@ -392,8 +412,13 @@ export async function requestVoiceNote(
 
 // The phone-tagged auto-voice entry: engine-chat's RUN_FINISHED hands
 // the completed reply, the run's device tag, and the streamed message
-// id here. Render, then try to play (best effort — the chip answers
-// when iOS says no).
+// id here. Render, then play — but ONLY on the gesture-unlocked
+// shared element (the send tap unlocked it synchronously before the
+// run). Without an unlock — a programmatic run, a keyboard-only
+// submit — iOS refuses programmatic play; the note lands ready
+// anyway, so the ▶ chip on the reply is the designed tap-to-play
+// fallback. Manual mode's chip tap is a gesture of its own and plays
+// through playVoiceNote un-gated.
 export function maybeAutoVoiceNote(
   raw: string,
   device: OwnerDevice,
@@ -406,7 +431,9 @@ export function maybeAutoVoiceNote(
   // text hash still renders + plays, the chip just does not appear.
   const id = messageId ?? `text-${text.length}-${text.slice(0, 64)}`;
   void requestVoiceNote(id, raw).then((state) => {
-    if (state.status === "ready") playVoiceNote(state.url);
+    if (state.status === "ready" && voiceAudioUnlocked) {
+      playVoiceNote(state.url);
+    }
   });
 }
 
@@ -414,7 +441,7 @@ export function maybeAutoVoiceNote(
 // speaking flag). Nothing outside tests calls this.
 export function resetVoiceLaneForTests(): void {
   voiceAudio = null;
-  voiceAudioPrimed = false;
+  voiceAudioUnlocked = false;
   speakingNow = false;
   voiceNotes.clear();
   voiceNoteListeners.clear();

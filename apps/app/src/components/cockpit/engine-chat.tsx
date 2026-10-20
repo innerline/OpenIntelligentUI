@@ -6,7 +6,7 @@ import { uuid } from "@/lib/uuid";
 import { detectOwnerDevice, getOwnerDeviceSource, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice, type OwnerDeviceSource } from "@/lib/owner-device";
 import { OwnerDeviceChip } from "@/components/cockpit/owner-device-chip";
 import { AssistantMessageWithSpeech, SpeakingChip, TtsErrorChip, TtsModeChip } from "@/components/cockpit/tts-speech";
-import { cancelSpeech, maybeAutoVoiceNote, primeVoiceAudio } from "@/lib/honey-tts";
+import { cancelSpeech, maybeAutoVoiceNote, unlockVoiceAudio } from "@/lib/honey-tts";
 import { isVisualPointer, publishVisual } from "@/lib/visual-pointer";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
 import { useEngineStatuses } from "./engine-status";
@@ -108,12 +108,16 @@ export function EngineChat({
     deviceRef.current = deviceTag.device;
   }, [deviceTag.device]);
   // iPhone voice (kanban/device-input-matrix): iOS blocks audio
-  // playback outside a user gesture — prime the shared Audio element
-  // on the first tap anywhere in the page (the send-button tap
-  // counts) with digital silence, so the reply's voice note can
-  // auto-play later. Capture phase, before React handlers.
+  // playback outside a user gesture, and the reply's voice render
+  // completes asynchronously AFTER the send tap — so the tap itself
+  // must unlock the shared Audio element SYNCHRONOUSLY. The captured
+  // document pointerdown fires inside the tap (before the send
+  // handler, before the run): play the silent primer, pause, reset
+  // src. The unlocked element then accepts the render's src + play()
+  // when it lands. Every tap re-runs it (idempotent) so anything that
+  // re-locked the element is healed by the next send.
   useEffect(() => {
-    const onPointerDown = () => primeVoiceAudio();
+    const onPointerDown = () => unlockVoiceAudio();
     document.addEventListener("pointerdown", onPointerDown, { capture: true });
     return () =>
       document.removeEventListener("pointerdown", onPointerDown, {

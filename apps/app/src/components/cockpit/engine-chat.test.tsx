@@ -549,11 +549,17 @@ class FakeAudio {
   static instances: FakeAudio[] = [];
   src = "";
   paused = true;
+  // src at the moment of each play() call — the send tap's unlock
+  // plays digital silence, the reply plays the render URL.
+  playSrcs: string[] = [];
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onloadedmetadata: (() => void) | null = null;
   preload = "";
-  play = vi.fn(() => Promise.resolve());
+  play = vi.fn((): Promise<void> => {
+    this.playSrcs.push(this.src);
+    return Promise.resolve();
+  });
   pause = vi.fn();
   load = vi.fn();
   removeAttribute = vi.fn((name: string) => {
@@ -570,6 +576,11 @@ function installFakeAudio() {
   resetVoiceLaneForTests();
   return {
     played: () => FakeAudio.instances.filter((a) => a.play.mock.calls.length > 0),
+    // real-note plays only (the unlock's data-URI silence excluded)
+    playedUrls: () =>
+      FakeAudio.instances.flatMap((a) =>
+        a.playSrcs.filter((s) => !s.startsWith("data:")),
+      ),
     elements: () => FakeAudio.instances,
   };
 }
@@ -589,8 +600,10 @@ it("auto mode renders + plays the completed reply on a phone-tagged run", async 
   expect(voiceRequests[0]?.text).toContain("hearing you loud and clear");
   // the voice-note chip rides the reply, and playback auto-started
   expect(await screen.findByRole("button", { name: /play voice note/i })).toBeInTheDocument();
-  await waitFor(() => expect(audio.played().length).toBeGreaterThan(0));
-  expect(audio.played()[0]?.src).toContain("/api/cockpit/voice/audio?id=");
+  // the send tap unlocked the shared element first (iOS autoplay gate)
+  expect(FakeAudio.instances[0]?.playSrcs[0]).toMatch(/^data:audio\/wav;base64,/);
+  await waitFor(() => expect(audio.playedUrls().length).toBeGreaterThan(0));
+  expect(audio.playedUrls()[0]).toContain("/api/cockpit/voice/audio?id=");
 });
 
 it("auto mode renders on the owner's typed path too (the per-thread clone lane)", async () => {
@@ -613,7 +626,7 @@ it("auto mode renders on the owner's typed path too (the per-thread clone lane)"
 
 it("auto mode stays silent on a non-phone run", async () => {
   stubDeviceEnv({ ua: MAC_UA, width: 1728 }); // default loopback origin → studio tag
-  installFakeAudio();
+  const audio = installFakeAudio();
   window.localStorage.setItem(PIN_KEY, "web-tts-studio");
   const { fn, voiceRequests } = mockFetch("web-tts-studio", {}, undefined, "A longer reply nobody should hear aloud.");
   vi.stubGlobal("fetch", fn);
@@ -622,7 +635,9 @@ it("auto mode stays silent on a non-phone run", async () => {
   await typeAndSend(container, "from the studio");
   await screen.findByText("A longer reply nobody should hear aloud.");
   expect(voiceRequests).toHaveLength(0);
-  expect(FakeAudio.instances).toHaveLength(0);
+  // the tap unlocked the shared element (it serves any later manual
+  // play), but no note ever rendered or played on this studio run
+  expect(audio.playedUrls()).toHaveLength(0);
   expect(
     screen.queryByRole("button", { name: /play voice note/i }),
   ).toBeNull();
@@ -667,7 +682,7 @@ it("manual mode: the play button renders on demand and plays; off hides it live"
   await waitFor(() =>
     expect(voiceRequests[0]?.text).toContain("This is the spoken reply."),
   );
-  await waitFor(() => expect(audio.played().length).toBeGreaterThan(0));
+  await waitFor(() => expect(audio.playedUrls().length).toBeGreaterThan(0));
   // flipping the mode to off hides the button without a remount
   setTtsMode("off");
   await waitFor(() =>
@@ -713,7 +728,10 @@ it("a failed render is VISIBLE: the reply's chip says so, the error chip too", a
 
 // The owner's own send path: type into the chat input and submit. The
 // typed run rides CopilotChat's per-thread clone of the agent — a
-// different instance than engine-chat's registry agent.
+// different instance than engine-chat's registry agent. The pointerdown
+// first is the real gesture shape: the capture listener unlocks the
+// shared Audio element INSIDE the tap, before the form submits — that
+// unlock is what lets the reply's voice note auto-play on iOS.
 async function typeAndSend(container: HTMLElement, text: string) {
   const box = await waitFor(() => {
     const el = container.querySelector(
@@ -722,6 +740,7 @@ async function typeAndSend(container: HTMLElement, text: string) {
     if (!el) throw new Error("chat input not rendered yet");
     return el as HTMLElement;
   });
+  document.dispatchEvent(new Event("pointerdown", { bubbles: true }));
   fireEvent.change(box, { target: { value: text } });
   const form = box.closest("form");
   if (form) fireEvent.submit(form);
@@ -735,16 +754,20 @@ it("a new run stops a voice note still playing", async () => {
   const { fn } = mockFetch(null, {}, undefined, "First spoken reply.");
   vi.stubGlobal("fetch", fn);
   chat();
+  // the owner's tap on this page: unlock the shared element (the
+  // deep-link run itself carries no gesture)
+  document.dispatchEvent(new Event("pointerdown", { bubbles: true }));
 
-  await waitFor(() => expect(FakeAudio.instances.length).toBeGreaterThan(0));
-  await waitFor(() => expect(FakeAudio.instances[0]?.play.mock.calls.length).toBeGreaterThan(0));
+  const el = () => FakeAudio.instances[0];
+  await waitFor(() => expect(el()?.playSrcs.some((s) => s.includes("/api/cockpit/voice/audio"))).toBe(true));
+  const pausesBefore = el()?.pause.mock.calls.length ?? 0;
   // the Visuals tab's ask-honey hand-off fires a second run through
   // the same surface — the old voice must stop before the new run
   window.dispatchEvent(
     new CustomEvent("cockpit-ask-honey", { detail: "second question" }),
   );
   await waitFor(() =>
-    expect(FakeAudio.instances[0]?.pause.mock.calls.length).toBeGreaterThan(0),
+    expect(el()?.pause.mock.calls.length ?? 0).toBeGreaterThan(pausesBefore),
   );
   window.history.replaceState({}, "", "/");
 });
