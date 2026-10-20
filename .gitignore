@@ -63,3 +63,6 @@ bun.lockb
 
 # References
 .references
+
+# Server-rendered voice notes (cockpit voice lane)
+runtime/

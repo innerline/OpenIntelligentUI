@@ -9,51 +9,134 @@ import { AnswerMarkdown } from "@/components/chat/answer-markdown";
 import {
   cancelSpeech,
   getTtsMode,
+  getVoiceNote,
+  playVoiceNote,
+  requestVoiceNote,
   setTtsMode,
-  speakReply,
   subscribeSpeaking,
   subscribeTtsErrors,
+  subscribeVoiceNote,
   TTS_ERROR_FADE_MS,
   HONEY_TTS_MODE_CHANGED_EVENT,
   TTS_MODES,
   type TtsError,
   type TtsMode,
+  type VoiceNoteState,
 } from "@/lib/honey-tts";
 
-// Honey TTS on the cockpit chat surfaces (MWP kanban/device-input-matrix
-// slice 3: "iPhone is using chat to TTS and STT"). Three pieces live
-// here, all additive:
-//   1. AssistantMessageWithSpeech — wraps the default assistant message
-//      with the read-aloud slot (visible only in manual mode) while
-//      keeping the app's markdown renderer. Module-stable identity so
+// Honey voice output on the cockpit chat surfaces (MWP kanban
+// /device-input-matrix slice: "iPhone is using chat to TTS and STT").
+// Four builds of on-device speechSynthesis stayed silent on the
+// owner's phone — replies are now rendered SERVER-side (`say` on the
+// Studio) and played here as voice notes. Pieces, all additive:
+//   1. AssistantMessageWithSpeech — wraps the default assistant
+//      message, keeping the app's markdown renderer, and rides the
+//      voice-note chip inside each reply. Module-stable identity so
 //      engine-chat's MESSAGE_VIEW never remounts chat internals.
-//   2. TtsModeChip — the persistent voice-output toggle (auto / manual
-//      / off, localStorage honey-tts-mode), styled to the device-chip
-//      grammar next to it in the chat head.
-//   3. SpeakingChip — the visible "speaking" state: a stop chip that
+//   2. VoiceNoteChip — per-reply ▶ play chip (auto mode's phone lane
+//      and manual mode's 🔊 both publish state on the message id).
+//   3. TtsModeChip — the persistent voice-output toggle (auto /
+//      manual / off, localStorage honey-tts-mode), styled to the
+//      device-chip grammar next to it in the chat head.
+//   4. SpeakingChip — the visible "playing" state: a stop chip that
 //      kills playback on tap. Renders nothing while silent.
-//   4. TtsErrorChip — a spoken-reply failure, visible (owner phone
-//      2026-10-20: speaking=true, no audio — never again silent).
-//      Same chip grammar as the stop chip beside it; fades after
+//   5. TtsErrorChip — a voice failure, visible (never again silent).
+//      Same chip grammar as the stop chip; fades after
 //      TTS_ERROR_FADE_MS.
 
 export function AssistantMessageWithSpeech(
   props: CopilotChatAssistantMessageProps,
 ) {
+  const message = props.message;
+  const messageId =
+    message && typeof message.id === "string" ? message.id : null;
+  const content =
+    typeof message?.content === "string" ? message.content : null;
   return (
     <CopilotChatAssistantMessage
       {...props}
       markdownRenderer={AnswerMarkdown}
       // The toolbar renders the read-aloud button once an onReadAloud
-      // exists; the button itself decides whether manual mode shows it.
+      // exists; the button itself decides whether manual mode shows
+      // it. Manual mode = render this reply on demand, then play —
+      // the tap primed the shared element, so play survives the
+      // async fetch.
       onReadAloud={() => {
-        const content = props.message?.content;
-        if (typeof content === "string" && content.trim()) {
-          speakReply(content);
+        if (messageId && content && content.trim()) {
+          void requestVoiceNote(messageId, content).then((state) => {
+            if (state.status === "ready") playVoiceNote(state.url);
+          });
         }
       }}
       readAloudButton={TtsReadAloudButton}
+      // The voice-note chip rides the reply's own toolbar (CopilotKit
+      // slot for extra items — the children render-prop would replace
+      // the whole default layout).
+      additionalToolbarItems={
+        messageId ? <VoiceNoteChip messageId={messageId} /> : null
+      }
     />
+  );
+}
+
+// The voice-note chip on a reply: ▶ play (with duration when the
+// browser hands it over cheaply), "rendering…" while the Studio's
+// `say` runs, and "voice render failed" when it does not — never a
+// silent failure. Renders nothing until a voice note exists for THIS
+// message id, so auto mode's non-phone runs stay untouched.
+function VoiceNoteChip({ messageId }: { messageId: string }) {
+  const [note, setNote] = useState<VoiceNoteState | null>(() =>
+    getVoiceNote(messageId),
+  );
+  useEffect(() => subscribeVoiceNote(messageId, setNote), [messageId]);
+  // Duration if cheap: a metadata-only probe never plays audio.
+  const [duration, setDuration] = useState<number | null>(null);
+  const url = note?.status === "ready" ? note.url : null;
+  useEffect(() => {
+    if (!url || typeof Audio === "undefined") return;
+    const probe = new Audio();
+    try {
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => {
+        if (Number.isFinite(probe.duration)) setDuration(probe.duration);
+      };
+      probe.src = url;
+    } catch {
+      // duration is a nicety, never load-bearing
+    }
+    return () => {
+      probe.onloadedmetadata = null;
+      try {
+        probe.removeAttribute("src");
+      } catch {
+        // jsdom stubs may throw
+      }
+    };
+  }, [url]);
+  if (!note) return null;
+  if (note.status === "failed") {
+    return (
+      <span className="tts-note-chip tts-note-failed" role="alert">
+        voice render failed
+      </span>
+    );
+  }
+  if (note.status === "rendering") {
+    return <span className="tts-note-chip">rendering voice…</span>;
+  }
+  const mm = duration === null ? null : Math.floor(duration / 60);
+  const ss =
+    duration === null ? null : String(Math.round(duration % 60)).padStart(2, "0");
+  return (
+    <button
+      type="button"
+      className="tts-note-chip tts-note-play"
+      aria-label="Play voice note"
+      title="Play Honey's reply as a voice note"
+      onClick={() => playVoiceNote(note.url)}
+    >
+      ▶ voice note{mm !== null && ss !== null ? ` · ${mm}:${ss}` : ""}
+    </button>
   );
 }
 
@@ -190,10 +273,10 @@ export function SpeakingChip() {
   );
 }
 
-// A spoken-reply failure (lib quirk 4): renders beside the stop chip
-// in the same grammar, `voice error: <type or message>`, and fades
-// after TTS_ERROR_FADE_MS. The engine's own message is shown only
-// when it gave no error type.
+// A voice failure (render or playback): renders beside the stop chip
+// in the same grammar, `voice error: <label>`, and fades after
+// TTS_ERROR_FADE_MS. The render lane's own types get plain words —
+// the owner reads "voice render failed", not a code.
 export function TtsErrorChip() {
   const [error, setError] = useState<TtsError | null>(null);
   useEffect(() => {
@@ -210,7 +293,13 @@ export function TtsErrorChip() {
   }, []);
   if (!error) return null;
   const label =
-    error.type === "unknown" && error.message ? error.message : error.type;
+    error.type === "voice-render-failed"
+      ? "voice render failed"
+      : error.type === "voice-playback-failed"
+        ? "voice note would not play"
+        : error.type === "unknown" && error.message
+          ? error.message
+          : error.type;
   return (
     <span className="owner-device-chip-btn tts-error-chip" role="alert">
       voice error: {label}

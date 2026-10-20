@@ -1,37 +1,43 @@
-// Honey TTS — the cockpit's half of the iPhone voice contract
+// Honey voice output — the cockpit's half of the iPhone voice contract
 // (MWP kanban/device-input-matrix, owner directive 2026-10-18: "iPhone
-// is using chat to TTS and STT"). When a chat run's device tag is
-// `phone`, Honey's completed reply is SPOKEN aloud through the Web
-// Speech API — no external TTS service, everything stays on-device.
+// is using chat to TTS and STT").
+//
+// HISTORY / RULING: this lane was built four times on the browser's
+// speechSynthesis (primer, chunking, explicit voice pick, visible
+// errors) and stayed SILENT on the owner's phone every time
+// (2026-10-20, speaking=true, zero audio). Owner ruling: keep it
+// simple — server-side voice. All speechSynthesis code is REMOVED,
+// not left dormant: nothing regresses to a proven-dead path.
+//
+// The lane now: Honey's completed reply is rendered SERVER-side by the
+// Studio's native `say` CLI (POST /api/cockpit/voice/render → an .m4a
+// cached by text hash), and played in the browser as a voice note.
 //
 // Three modes persist at localStorage `honey-tts-mode` (the same lane
 // as the device pin; corrupt values are ignored, not trusted):
-//   auto   — speak automatically on phone-tagged runs (the default;
-//            non-phone devices stay silent)
-//   manual — never auto-speak; a play button rides every assistant
-//            message on ANY device
-//   off    — never speak, no buttons
+//   auto   — on a phone-tagged run the completed reply renders and
+//            auto-plays (best effort); non-phone devices stay silent
+//   manual — a play button rides every assistant message on ANY
+//            device; tapping renders on demand and plays
+//   off    — never renders, never plays, no buttons
 //
-// iOS Safari quirks this module owns:
-//   1. speechSynthesis refuses to speak unless speak() ran once inside
-//      a user gesture — unlockSpeech() is called from a pointerdown
-//      (the send-button tap counts) and primes it with a near-silent
-//      utterance. The primer must NOT be volume 0: iOS pins the audio
-//      session at the primer's gain, so a zero-gain primer leaves
-//      every later utterance SILENT while speechSynthesis.speaking
-//      still reports true (owner phone, 2026-10-20). It primes at
-//      0.01 — inaudible but nonzero — and cancels itself once done to
-//      reset the session; every real utterance sets volume = 1.
-//   2. long utterances stall mid-speech on iOS — replies are chunked
-//      into sentence-boundary pieces of ≤ SPEECH_CHUNK_CHARS and queued;
-//      short utterances chain through the browser's native queue.
-//   3. a new run (or the stop chip) cancels whatever is still speaking.
-//   4. the SYSTEM-DEFAULT voice can fail silently on iOS Safari (owner
-//      phone 2026-10-20, after the primer fix: speaking=true, no
-//      audio). Every reply picks an explicit voice instead — see
-//      pickVoice() — and utterance errors are reported to subscribers
-//      (subscribeTtsErrors) so the cockpit can show them: no silent
-//      failures.
+// iOS posture (the whole point of the redesign):
+//   • Autoplay outside a user gesture is usually blocked, so a captured
+//     pointerdown (the send tap counts) primes ONE shared Audio
+//     element with a data-URI of digital silence. Digital silence —
+//     not a volume-0 trick: iOS ignores HTMLAudio.volume, and the old
+//     speechSynthesis zero-gain primer bug pinned the session mute.
+//     Priming once inside the gesture leaves the element (and the
+//     audio session) unlocked, and later src swaps can play.
+//   • If autoplay is still refused, play()'s rejection is swallowed —
+//     the voice-note chip on the reply stays as tap-to-play. That is
+//     the designed fallback, not an error.
+//   • A new run (or the stop chip, or hiding the tab) stops playback —
+//     Honey never talks over herself.
+//
+// Errors are NEVER silent: render failures reach subscribeTtsErrors
+// (the cockpit's TtsErrorChip) and the reply's own chip states
+// "voice render failed".
 
 import type { OwnerDevice } from "@/lib/owner-device";
 
@@ -49,30 +55,13 @@ export const HONEY_TTS_MODE_KEY = "honey-tts-mode";
 // reaches other tabs).
 export const HONEY_TTS_MODE_CHANGED_EVENT = "honey-tts-mode-changed";
 
-// Spoken budget: the first ~700 characters, then the tail note. Phone
-// replies are short by contract (the device line tells the engine so),
-// so this mostly guards a runaway reply.
-export const SPEECH_CAP_CHARS = 700;
-const SPEECH_CAP_SUFFIX = " Message continues on screen.";
+// The server owns the spoken cap (~2000 chars); the client just keeps
+// the POST payload sane.
+export const VOICE_REQUEST_CAP_CHARS = 4000;
 
-// iOS stalls on long single utterances; short chained ones survive.
-export const SPEECH_CHUNK_CHARS = 200;
-
-// Voice picking (quirk 4). Replies are English; voices are matched by
-// lang prefix, on-device ones preferred, then the known-good iOS
-// names in the order the owner's phone answered best.
-export const SPEECH_LANG_PREFIX = "en";
-const PREFERRED_VOICE_NAMES: readonly string[] = [
-  "Samantha",
-  "Ava",
-  "Allison",
-  "Nick",
-];
-
-// Chrome/iOS load the voice list asynchronously — getVoices() returns
-// [] until voiceschanged fires (and some engines never fire it), so
-// the picker re-checks once after this long even without the event.
-const VOICES_WAIT_MS = 1500;
+// How long the cockpit's error chip stays up before fading (the
+// failure is visible, not sticky).
+export const TTS_ERROR_FADE_MS = 12_000;
 
 export function isTtsMode(value: unknown): value is TtsMode {
   return (
@@ -100,7 +89,7 @@ export function setTtsMode(mode: TtsMode): void {
   window.dispatchEvent(new Event(HONEY_TTS_MODE_CHANGED_EVENT));
 }
 
-// Auto mode speaks ONLY phone-tagged runs — laptop/ipad/studio get the
+// Auto mode voices ONLY phone-tagged runs — laptop/ipad/studio get the
 // silent reading surface unless the owner switched to manual.
 export function shouldAutoSpeak(mode: TtsMode, device: OwnerDevice): boolean {
   return mode === "auto" && device === "phone";
@@ -108,9 +97,9 @@ export function shouldAutoSpeak(mode: TtsMode, device: OwnerDevice): boolean {
 
 // Markdown → speakable text. Code is not speech (fences drop, inline
 // code unwraps); links speak their text, not their URLs; headings,
-// list markers, quotes and emphasis unwraps. The adapter already
+// list markers, quotes and emphasis unwrap. The adapter already
 // strips the VISUAL machine line server-side (slice 2), so it never
-// reaches here.
+// reaches here. The server sanitizes + caps the result.
 export function cleanForSpeech(raw: string): string {
   return raw
     .replace(/```[\s\S]*?(```|$)/g, " ") // fenced code blocks
@@ -133,63 +122,41 @@ export function cleanForSpeech(raw: string): string {
     .trim();
 }
 
-// Speak the first ~SPEECH_CAP_CHARS, cutting at a sentence end when
-// one sits in the second half of the budget (falling back to a word
-// boundary, then a hard cut) and appending the on-screen tail note.
-export function capForSpeech(text: string): string {
-  if (text.length <= SPEECH_CAP_CHARS) return text;
-  const head = text.slice(0, SPEECH_CAP_CHARS);
-  const sentenceEnd = Math.max(
-    head.lastIndexOf("."),
-    head.lastIndexOf("!"),
-    head.lastIndexOf("?"),
-    head.lastIndexOf("…"),
-    head.lastIndexOf(";"),
-    head.lastIndexOf(":"),
-  );
-  const wordEnd = head.lastIndexOf(" ");
-  const cut =
-    sentenceEnd > SPEECH_CAP_CHARS / 2
-      ? text.slice(0, sentenceEnd + 1).trim()
-      : wordEnd > SPEECH_CAP_CHARS / 2
-        ? text.slice(0, wordEnd).trim()
-        : head.trim();
-  return cut + SPEECH_CAP_SUFFIX;
+// --- voice-note state (the per-reply chip listens) ---
+
+export type VoiceNoteState =
+  | { status: "rendering" }
+  | { status: "ready"; url: string }
+  | { status: "failed"; message: string };
+
+const voiceNotes = new Map<string, VoiceNoteState>();
+const voiceNoteListeners = new Map<string, Set<(s: VoiceNoteState) => void>>();
+
+function publishVoiceNote(messageId: string, state: VoiceNoteState): void {
+  voiceNotes.set(messageId, state);
+  for (const listener of voiceNoteListeners.get(messageId) ?? []) listener(state);
 }
 
-// Sentence-boundary chunks of ≤ SPEECH_CHUNK_CHARS (no lookbehind —
-// older Safari throws at regex-compile time). Oversized sentences
-// hard-split at word boundaries. Joining the chunks with a space
-// reproduces the text.
-export function chunkForSpeech(text: string): string[] {
-  if (!text.trim()) return [];
-  const sentences = text.replace(/([.!?…])\s+/g, "$1\u0000").split("\u0000");
-  const pieces: string[] = [];
-  for (const sentence of sentences) {
-    let s = sentence.trim();
-    if (!s) continue;
-    while (s.length > SPEECH_CHUNK_CHARS) {
-      let cut = s.lastIndexOf(" ", SPEECH_CHUNK_CHARS);
-      if (cut <= 0) cut = SPEECH_CHUNK_CHARS; // monster word: hard cut
-      const piece = s.slice(0, cut).trim();
-      if (piece) pieces.push(piece);
-      s = s.slice(cut).trim();
-    }
-    if (s) pieces.push(s);
-  }
-  const chunks: string[] = [];
-  for (const piece of pieces) {
-    const last = chunks[chunks.length - 1];
-    if (last && last.length + 1 + piece.length <= SPEECH_CHUNK_CHARS) {
-      chunks[chunks.length - 1] = last + " " + piece;
-    } else {
-      chunks.push(piece);
-    }
-  }
-  return chunks;
+export function getVoiceNote(messageId: string): VoiceNoteState | null {
+  return voiceNotes.get(messageId) ?? null;
 }
 
-// --- speaking state (the stop chip listens) ---
+export function subscribeVoiceNote(
+  messageId: string,
+  listener: (state: VoiceNoteState) => void,
+): () => void {
+  let set = voiceNoteListeners.get(messageId);
+  if (!set) {
+    set = new Set();
+    voiceNoteListeners.set(messageId, set);
+  }
+  set.add(listener);
+  return () => {
+    set.delete(listener);
+  };
+}
+
+// --- playback state (the stop chip listens) ---
 
 const speakingListeners = new Set<(active: boolean) => void>();
 let speakingNow = false;
@@ -212,90 +179,8 @@ export function isSpeaking(): boolean {
   return speakingNow;
 }
 
-function getSynth(): SpeechSynthesis | null {
-  if (typeof window === "undefined") return null;
-  return "speechSynthesis" in window ? window.speechSynthesis : null;
-}
-
-// Pick the voice a reply is spoken with, best-first: (a) voices whose
-// lang matches the reply language prefix, (b) localService ones among
-// them, (c) the known-good iOS names in order, then any other
-// matching voice, (d) any voice at all when none match the language.
-// null = nothing to pick from — leave utterance.voice unset and let
-// the system default answer; speech is never blocked on the picker.
-export function pickVoice(
-  voices: readonly SpeechSynthesisVoice[],
-): SpeechSynthesisVoice | null {
-  if (!voices.length) return null;
-  const langMatches = voices.filter((v) =>
-    (v.lang ?? "").toLowerCase().startsWith(SPEECH_LANG_PREFIX),
-  );
-  const local = langMatches.filter((v) => v.localService);
-  const pool = local.length ? local : langMatches;
-  for (const name of PREFERRED_VOICE_NAMES) {
-    const hit = pool.find((v) => v.name === name);
-    if (hit) return hit;
-  }
-  return pool[0] ?? voices[0] ?? null;
-}
-
-// The picked voice for the CURRENT synth, cached. getVoices() is
-// usually empty on the first call (iOS/Chrome load the list late), so
-// the pick is retried when voiceschanged fires — or once after
-// VOICES_WAIT_MS on engines that never fire it. Keyed on the synth
-// instance: a fresh engine (new page, remount) re-picks from scratch.
-let voicePick: {
-  synth: SpeechSynthesis;
-  voice: SpeechSynthesisVoice | null;
-} | null = null;
-
-function ensureVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
-  if (voicePick?.synth === synth) return voicePick.voice;
-  voicePick = { synth, voice: null };
-  const readVoices = (): readonly SpeechSynthesisVoice[] => {
-    try {
-      const list =
-        typeof synth.getVoices === "function" ? synth.getVoices() : [];
-      return Array.isArray(list) ? list : [];
-    } catch {
-      return [];
-    }
-  };
-  const repick = () => {
-    if (voicePick?.synth !== synth || voicePick.voice) return;
-    voicePick.voice = pickVoice(readVoices());
-  };
-  repick(); // usually empty on iOS — fine, never blocks speech
-  if (!voicePick.voice) {
-    if (typeof synth.addEventListener === "function") {
-      try {
-        synth.addEventListener("voiceschanged", repick);
-      } catch {
-        // not an EventTarget after all: the timeout below still re-picks
-      }
-    }
-    setTimeout(repick, VOICES_WAIT_MS); // backstop — some engines never fire
-  }
-  return voicePick.voice;
-}
-
 // --- voice errors (the cockpit renders them — no silent failures) ---
 
-// Deliberate stops (the stop chip, a new run's reset) also fire
-// onerror on some engines with these types — not failures, never
-// surfaced to the owner.
-const BENIGN_ERROR_TYPES: ReadonlySet<string> = new Set([
-  "canceled",
-  "interrupted",
-]);
-
-// How long the cockpit's error chip stays up before fading (the
-// failure is visible, not sticky).
-export const TTS_ERROR_FADE_MS = 12_000;
-
-// What an utterance error hands the cockpit: the engine's error type
-// ("synthesis-failed", "voice-unavailable", …) or "unknown", plus the
-// engine's message when it gave one.
 export interface TtsError {
   type: string;
   message: string;
@@ -303,8 +188,6 @@ export interface TtsError {
 
 const ttsErrorListeners = new Set<(error: TtsError) => void>();
 
-// Subscribe to spoken-reply failures — the cockpit's error chip.
-// Same grammar as subscribeSpeaking.
 export function subscribeTtsErrors(
   listener: (error: TtsError) => void,
 ): () => void {
@@ -314,119 +197,225 @@ export function subscribeTtsErrors(
   };
 }
 
-function readErrorEvent(event: unknown): TtsError {
-  if (event && typeof event === "object") {
-    const { error, message } = event as { error?: unknown; message?: unknown };
-    return {
-      type: typeof error === "string" && error ? error : "unknown",
-      message: typeof message === "string" ? message : "",
+function reportTtsError(type: string, message: string): void {
+  for (const listener of ttsErrorListeners) listener({ type, message });
+}
+
+// --- the shared Audio element ---
+//
+// ONE element for the whole mount, created inside the owner's send
+// gesture (primeVoiceAudio). iOS unlocks the element/session in the
+// gesture; every later playback swaps src on the same element. jsdom
+// has no Audio — guarded, so tests stub it.
+
+type VoiceAudio = HTMLAudioElement & {
+  play: () => Promise<void> | void;
+};
+
+let voiceAudio: VoiceAudio | null = null;
+let voiceAudioPrimed = false;
+
+// Digital silence, ~50ms, 8-bit mono WAV as a data URI — built here
+// rather than pasted, so no transcription error can corrupt it. NOT
+// volume zero: iOS ignores HTMLAudio.volume, and the gain-pin bug
+// that killed the speechSynthesis lane cannot happen to file content
+// that is silent samples at normal gain.
+const SILENT_PRIMER_URI = (() => {
+  try {
+    const sr = 8000;
+    const n = Math.floor(sr * 0.05); // 400 samples of digital silence
+    const wav = new Uint8Array(44 + n);
+    const ascii = (o: number, t: string) => {
+      for (let i = 0; i < t.length; i++) wav[o + i] = t.charCodeAt(i);
     };
+    const u32 = (o: number, v: number) => {
+      wav[o] = v & 0xff;
+      wav[o + 1] = (v >>> 8) & 0xff;
+      wav[o + 2] = (v >>> 16) & 0xff;
+      wav[o + 3] = (v >>> 24) & 0xff;
+    };
+    const u16 = (o: number, v: number) => {
+      wav[o] = v & 0xff;
+      wav[o + 1] = (v >>> 8) & 0xff;
+    };
+    ascii(0, "RIFF");
+    u32(4, 36 + n);
+    ascii(8, "WAVE");
+    ascii(12, "fmt ");
+    u32(16, 16); // PCM chunk size
+    u16(20, 1); // format = PCM
+    u16(22, 1); // mono
+    u32(24, sr);
+    u32(28, sr); // byte rate (8-bit mono = sr)
+    u16(32, 1); // block align
+    u16(34, 8); // bits per sample
+    ascii(36, "data");
+    u32(40, n);
+    wav.fill(128, 44); // 8-bit silence is the midpoint, not zero
+    let bin = "";
+    for (let i = 0; i < wav.length; i++) bin += String.fromCharCode(wav[i]);
+    return `data:audio/wav;base64,${btoa(bin)}`;
+  } catch {
+    return ""; // no btoa in this environment: chips answer without a primer
   }
-  return { type: "unknown", message: "" };
+})();
+
+function makeAudioElement(): VoiceAudio | null {
+  if (typeof Audio === "undefined") return null; // jsdom / SSR
+  try {
+    const el = new Audio() as VoiceAudio;
+    return el;
+  } catch {
+    return null;
+  }
 }
 
-function reportTtsError(event: unknown): void {
-  const error = readErrorEvent(event);
-  if (BENIGN_ERROR_TYPES.has(error.type)) return; // our own cancel
-  for (const listener of ttsErrorListeners) listener(error);
+// iOS unlock: called from a captured pointerdown (the send tap
+// counts). Plays the silent primer once per session inside the
+// gesture so the element is unlocked when the reply finishes later.
+// Off mode never primes. Failure is swallowed — a blocked primer only
+// means autoplay will rely on the chip's tap-to-play.
+export function primeVoiceAudio(): void {
+  if (voiceAudioPrimed || getTtsMode() === "off") return;
+  const el = voiceAudio ?? makeAudioElement();
+  if (!el) return;
+  voiceAudio = el;
+  voiceAudioPrimed = true;
+  try {
+    if (SILENT_PRIMER_URI) el.src = SILENT_PRIMER_URI;
+    const p = el.play();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {
+    // stay unprimed on the next tap… but the element still exists and
+    // a gesture-driven tap-to-play works regardless.
+  }
 }
 
-// Speak one reply: clean → cap → chunk → queue. Mode off never speaks
-// (the guard lives here so every entry path inherits it). The session
-// is reset (cancel) before every reply — iOS audio sessions can carry
-// stale gain/queue state, so nothing is inherited — and new speech
-// replaces whatever is still playing.
-export function speakReply(raw: string): void {
-  cancelSpeech(); // unconditional reply-start reset of the audio session
+function ensureVoiceAudio(): VoiceAudio | null {
+  const el = voiceAudio ?? makeAudioElement();
+  if (el) voiceAudio = el;
+  return el;
+}
+
+// Play a rendered voice note on the shared element. Outside a gesture
+// this is BEST-EFFORT: iOS may reject the play (the primer usually
+// prevents that); the rejection is swallowed because the chip on the
+// reply is the designed tap-to-play fallback, not an error. Real
+// element errors (decode/network) ARE reported — never silent.
+export function playVoiceNote(url: string): void {
   if (getTtsMode() === "off") return;
-  const synth = getSynth();
-  if (!synth || typeof SpeechSynthesisUtterance === "undefined") return;
-  const text = capForSpeech(cleanForSpeech(raw));
-  if (!text) return;
-  const chunks = chunkForSpeech(text);
-  // Quirk 4: the system default can be unplayable — pin an explicit
-  // voice when one is loaded; null (list still empty) means the system
-  // default, which still beats not speaking at all.
-  const voice = ensureVoice(synth);
-  let queued = false;
-  chunks.forEach((chunk, i) => {
-    const utterance = new SpeechSynthesisUtterance(chunk);
-    utterance.volume = 1; // explicit — never inherit the primer's 0.01
-    if (voice) utterance.voice = voice;
-    if (i === chunks.length - 1) {
-      utterance.onend = () => setSpeaking(false);
-      utterance.onerror = (event) => {
-        reportTtsError(event); // visible — never a silent failure again
-        setSpeaking(false);
-      };
-    } else {
-      // a failed mid-reply chunk aborts the whole playback cleanly
-      utterance.onerror = (event) => {
-        reportTtsError(event);
-        cancelSpeech();
-      };
+  const el = ensureVoiceAudio();
+  if (!el) return;
+  el.onended = () => setSpeaking(false);
+  el.onerror = () => {
+    setSpeaking(false);
+    reportTtsError("voice-playback-failed", "the voice note would not play");
+  };
+  try {
+    el.src = url;
+    const p = el.play();
+    setSpeaking(true);
+    if (p && typeof p.catch === "function") {
+      p.catch(() => setSpeaking(false)); // autoplay blocked — chip answers
     }
-    try {
-      synth.speak(utterance);
-      queued = true;
-    } catch {
-      // refused (e.g. no voices yet): the next reply tries again
-    }
-  });
-  setSpeaking(queued);
+  } catch {
+    setSpeaking(false); // refused outright — chip answers
+  }
 }
 
 // Stop immediately — the stop chip, a new run, and page-hide all call
 // this so a stale voice never talks over the next reply.
 export function cancelSpeech(): void {
-  const synth = getSynth();
-  try {
-    synth?.cancel();
-  } catch {
-    // some engines throw on cancel with nothing queued
+  const el = voiceAudio;
+  if (el) {
+    try {
+      el.pause();
+      el.removeAttribute("src"); // drop the connection, keep the element
+      el.load?.();
+    } catch {
+      // some engines throw on load with no src
+    }
   }
   setSpeaking(false);
 }
 
-// The phone-tagged auto-speak entry: engine-chat's RUN_FINISHED hands
-// the completed reply and the run's device tag here.
-export function maybeAutoSpeak(raw: string, device: OwnerDevice): void {
-  if (!shouldAutoSpeak(getTtsMode(), device)) return;
-  speakReply(raw);
+// --- rendering ---
+
+export interface VoiceRenderResponse {
+  url: string;
+  cached: boolean;
+  voice?: string | null;
 }
 
-// iOS quirk 1: speechSynthesis ignores speak() until it has been
-// called once inside a user gesture. engine-chat wires this to a
-// captured pointerdown (the send-button tap counts) — a near-silent
-// 0.01-volume primer unlocks the engine for the session. A volume-0
-// primer is NOT silent-but-safe on iOS: the audio session keeps the
-// primer's zero gain and later utterances play mute — so the primer
-// carries nonzero gain, and once it completes (or errors) it cancels
-// itself to hand back a clean audio session. That trailing cancel
-// skips a reply that started speaking in the same breath (manual
-// mode's play button races the primer).
-let speechUnlocked = false;
-
-export function unlockSpeech(): void {
-  if (speechUnlocked || getTtsMode() === "off") return; // off never speaks
-  const synth = getSynth();
-  if (!synth || typeof SpeechSynthesisUtterance === "undefined") return;
-  try {
-    const primer = new SpeechSynthesisUtterance(" ");
-    primer.volume = 0.01; // inaudible, but nonzero gain for the session
-    const resetSession = () => {
-      if (speakingNow) return; // a live reply owns the session now
-      try {
-        synth.cancel();
-      } catch {
-        // some engines throw on cancel with nothing queued
-      }
-    };
-    primer.onend = resetSession;
-    primer.onerror = resetSession;
-    synth.speak(primer);
-    speechUnlocked = true;
-  } catch {
-    // stay locked; the next tap tries again
+// Ask the Studio to render one reply. Never rejects: every failure is
+// published on the message's chip (status failed) AND the error lane
+// (TtsErrorChip) — the four silent-build incident is the reason this
+// lane exists. Returns the final state so callers can chain playback.
+export async function requestVoiceNote(
+  messageId: string,
+  raw: string,
+): Promise<VoiceNoteState> {
+  const text = cleanForSpeech(raw).slice(0, VOICE_REQUEST_CAP_CHARS);
+  if (!text) {
+    const failed: VoiceNoteState = { status: "failed", message: "nothing to speak" };
+    publishVoiceNote(messageId, failed);
+    return failed;
   }
+  const existing = voiceNotes.get(messageId);
+  if (existing && existing.status !== "failed") return existing; // already asked
+  publishVoiceNote(messageId, { status: "rendering" });
+  let state: VoiceNoteState;
+  try {
+    const res = await fetch("/api/cockpit/voice/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, sessionHint: messageId }),
+    });
+    if (!res.ok) {
+      throw new Error(`render answered ${res.status}`);
+    }
+    const body = (await res.json()) as VoiceRenderResponse;
+    if (typeof body?.url !== "string" || !body.url) {
+      throw new Error("render answered without a url");
+    }
+    state = { status: "ready", url: body.url };
+  } catch (e) {
+    state = {
+      status: "failed",
+      message: e instanceof Error ? e.message : "render failed",
+    };
+    reportTtsError("voice-render-failed", state.message);
+  }
+  publishVoiceNote(messageId, state);
+  return state;
+}
+
+// The phone-tagged auto-voice entry: engine-chat's RUN_FINISHED hands
+// the completed reply, the run's device tag, and the streamed message
+// id here. Render, then try to play (best effort — the chip answers
+// when iOS says no).
+export function maybeAutoVoiceNote(
+  raw: string,
+  device: OwnerDevice,
+  messageId: string | null,
+): void {
+  if (!shouldAutoSpeak(getTtsMode(), device)) return;
+  const text = cleanForSpeech(raw);
+  if (!text) return;
+  // Without a streamed message id the chip cannot key to a reply; the
+  // text hash still renders + plays, the chip just does not appear.
+  const id = messageId ?? `text-${text.length}-${text.slice(0, 64)}`;
+  void requestVoiceNote(id, raw).then((state) => {
+    if (state.status === "ready") playVoiceNote(state.url);
+  });
+}
+
+// Test seam: clear module state between tests (fresh element, chips,
+// speaking flag). Nothing outside tests calls this.
+export function resetVoiceLaneForTests(): void {
+  voiceAudio = null;
+  voiceAudioPrimed = false;
+  speakingNow = false;
+  voiceNotes.clear();
+  voiceNoteListeners.clear();
 }

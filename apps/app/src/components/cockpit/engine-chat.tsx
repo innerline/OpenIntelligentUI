@@ -6,7 +6,7 @@ import { uuid } from "@/lib/uuid";
 import { detectOwnerDevice, getOwnerDeviceSource, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice, type OwnerDeviceSource } from "@/lib/owner-device";
 import { OwnerDeviceChip } from "@/components/cockpit/owner-device-chip";
 import { AssistantMessageWithSpeech, SpeakingChip, TtsErrorChip, TtsModeChip } from "@/components/cockpit/tts-speech";
-import { cancelSpeech, maybeAutoSpeak, unlockSpeech } from "@/lib/honey-tts";
+import { cancelSpeech, maybeAutoVoiceNote, primeVoiceAudio } from "@/lib/honey-tts";
 import { isVisualPointer, publishVisual } from "@/lib/visual-pointer";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
 import { useEngineStatuses } from "./engine-status";
@@ -107,20 +107,21 @@ export function EngineChat({
   useEffect(() => {
     deviceRef.current = deviceTag.device;
   }, [deviceTag.device]);
-  // iPhone voice (kanban/device-input-matrix slice 3): iOS Safari
-  // refuses speechSynthesis until speak() ran once inside a user
-  // gesture — prime it on the first tap anywhere in the page (the
-  // send-button tap counts). capture phase, before React handlers.
+  // iPhone voice (kanban/device-input-matrix): iOS blocks audio
+  // playback outside a user gesture — prime the shared Audio element
+  // on the first tap anywhere in the page (the send-button tap
+  // counts) with digital silence, so the reply's voice note can
+  // auto-play later. Capture phase, before React handlers.
   useEffect(() => {
-    const onPointerDown = () => unlockSpeech();
+    const onPointerDown = () => primeVoiceAudio();
     document.addEventListener("pointerdown", onPointerDown, { capture: true });
     return () =>
       document.removeEventListener("pointerdown", onPointerDown, {
         capture: true,
       });
   }, []);
-  // iOS kills synthesis when the tab hides — keep the speaking state
-  // honest instead of leaving a dead stop chip on screen.
+  // iOS suspends audio when the tab hides — stop playback and keep
+  // the speaking state honest instead of leaving a dead stop chip.
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState === "hidden") cancelSpeech();
@@ -331,9 +332,10 @@ export function EngineChat({
       }) => {
         setError(null);
         // Connect/restore lanes (no streamed assistant text) publish and
-        // speak nothing — their RUN_FINISHED would otherwise wipe the
+        // voice nothing — their RUN_FINISHED would otherwise wipe the
         // pointer an earlier reply left in the sidebar.
         const ran = streamedReply.id !== null;
+        const replyId = streamedReply.id;
         streamedReply.id = null;
         const spoken = streamedReply.text;
         streamedReply.text = null;
@@ -347,10 +349,12 @@ export function EngineChat({
         // send paths (provider properties + the direct runAgent) report.
         const raw = event?.result?.visual;
         publishVisual(agentId, isVisualPointer(raw) ? raw : null);
-        // iPhone voice (slice 3): in auto mode a phone-tagged run's
-        // completed reply is spoken on-device (Web Speech, nothing
-        // leaves the browser) — the reply this run streamed, if any.
-        if (spoken) maybeAutoSpeak(spoken, deviceRef.current);
+        // iPhone voice: in auto mode a phone-tagged run's completed
+        // reply is rendered SERVER-side by the Studio's `say` CLI and
+        // played back as a voice note (the Web Speech lane was removed
+        // after four silent builds) — the reply this run streamed, if
+        // any. The message id keys the ▶ chip on the reply itself.
+        if (spoken) maybeAutoVoiceNote(spoken, deviceRef.current, replyId);
       },
     };
     handlers[SPEECH_SUB_TAG] = true;

@@ -863,6 +863,43 @@ html.dark .cockpit-app {
   white-space: nowrap;
 }
 
+/* --- Server-rendered voice notes (iPhone voice, post-Web-Speech):
+   the ▶ chip rides inside each reply — play + duration when ready,
+   "rendering voice…" while the Studio's `say` runs, warn-tinted when
+   the render failed (never silent). --- */
+
+.tts-note-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--ck-border);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: inherit;
+  opacity: 0.85;
+}
+
+button.tts-note-chip {
+  cursor: pointer;
+  background: transparent;
+}
+
+button.tts-note-chip:hover {
+  opacity: 1;
+  border-color: var(--ck-accent-border);
+  color: var(--ck-accent);
+}
+
+.tts-note-failed {
+  border-color: var(--ck-warn);
+  color: var(--ck-warn);
+  cursor: default;
+}
+
 .tts-play-btn {
   font: inherit;
   font-size: 13px;

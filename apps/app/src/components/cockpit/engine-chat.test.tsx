@@ -5,7 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { Providers } from "@/app/providers";
 import { EngineChat } from "@/components/cockpit/engine-chat";
 import { detectOwnerDevice } from "@/lib/owner-device";
-import { HONEY_TTS_MODE_KEY, setTtsMode } from "@/lib/honey-tts";
+import { HONEY_TTS_MODE_KEY, resetVoiceLaneForTests, setTtsMode } from "@/lib/honey-tts";
 
 // Cross-device rejoin (kanban/cockpit-thread-continuity, 2026-10-18):
 // the localStorage pin is per browser, so each device minted its own
@@ -32,10 +32,20 @@ function mockFetch(
 ) {
   const threadFetches: string[] = [];
   const runPayloads: Record<string, unknown>[] = [];
+  const voiceRequests: { text: string; sessionHint?: string }[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/provider-keys") return Response.json({ ok: true });
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+    if (url.startsWith("/api/cockpit/voice/render")) {
+      voiceRequests.push(body as { text: string; sessionHint?: string });
+      if (voiceRenderFails) return new Response("say down", { status: 500 });
+      return Response.json({
+        url: "/api/cockpit/voice/audio?id=fixedhash0000000000000000000000000000000000000000000000000000.m4a",
+        cached: voiceRequests.length > 1,
+        voice: "Samantha (English (US))",
+      });
+    }
     if (body.method === "info" || url.endsWith("/info")) {
       return Response.json({
         version: "1.55.2-next.1",
@@ -93,11 +103,15 @@ function mockFetch(
       { headers: { "Content-Type": "text/event-stream" } },
     );
   });
-  return { fn, threadFetches, runPayloads };
+  return { fn, threadFetches, runPayloads, voiceRequests };
 }
+
+// Flipped by the render-failure test; reset before every test below.
+let voiceRenderFails = false;
 
 beforeEach(() => {
   window.localStorage.clear();
+  voiceRenderFails = false;
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute("open", "");
   };
@@ -524,123 +538,136 @@ it("test mode flags the run, mints unpinned, never reads the anchor", async () =
   window.history.replaceState({}, "", "/");
 });
 
-// --- iPhone voice (kanban/device-input-matrix slice 3, 2026-10-20) ---
-// Web Speech API, fully on-device. auto (default) speaks the completed
-// reply of a phone-tagged run; manual puts a play button on every
-// assistant message; off never speaks. A new run cancels in-flight
-// speech. jsdom has no speechSynthesis — a fake records the queue.
+// --- iPhone voice (kanban/device-input-matrix) ---
+// Server-rendered voice notes: the Studio's `say` renders the reply,
+// the browser plays it. auto (default) renders + auto-plays the
+// completed reply of a phone-tagged run; manual renders on demand via
+// the 🔊 button on any device; off never renders. A new run stops
+// playback. jsdom has no Audio — a fake records the element.
 
-class FakeUtterance {
-  text: string;
-  volume = 1;
-  onend: (() => void) | null = null;
+class FakeAudio {
+  static instances: FakeAudio[] = [];
+  src = "";
+  paused = true;
+  onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  constructor(text: string) {
-    this.text = text;
+  onloadedmetadata: (() => void) | null = null;
+  preload = "";
+  play = vi.fn(() => Promise.resolve());
+  pause = vi.fn();
+  load = vi.fn();
+  removeAttribute = vi.fn((name: string) => {
+    if (name === "src") this.src = "";
+  });
+  constructor() {
+    FakeAudio.instances.push(this);
   }
 }
 
-function installFakeSynth() {
-  const spoken: FakeUtterance[] = [];
-  let cancelled = 0;
-  vi.stubGlobal("speechSynthesis", {
-    speak: (u: FakeUtterance) => spoken.push(u),
-    cancel: () => {
-      cancelled += 1;
-    },
-    speaking: false,
-  });
-  vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
+function installFakeAudio() {
+  FakeAudio.instances = [];
+  vi.stubGlobal("Audio", FakeAudio);
+  resetVoiceLaneForTests();
   return {
-    texts: () => spoken.map((u) => u.text),
-    isCancelled: () => cancelled,
+    played: () => FakeAudio.instances.filter((a) => a.play.mock.calls.length > 0),
+    elements: () => FakeAudio.instances,
   };
 }
 
-// RUN_FINISHED also clears the visual slot — a cheap deterministic
-// signal that the run (and its speech decision) has fully processed.
-const TTS_SLOT_SEED = JSON.stringify({ kind: "file", path: "seed.md" });
-
-it("auto mode speaks the completed reply on a phone-tagged run", async () => {
+it("auto mode renders + plays the completed reply on a phone-tagged run", async () => {
+  // The owner's own path: type and send — the run rides CopilotChat's
+  // per-thread clone, which is also the lane whose messages render.
   stubDeviceEnv({ ua: IPHONE_UA });
-  const synth = installFakeSynth();
-  window.localStorage.setItem(SLOT_KEY, TTS_SLOT_SEED);
-  window.history.replaceState({}, "", "/cockpit/honey?q=hi%20from%20the%20phone");
-  const { fn } = mockFetch(null, {}, undefined, "ACK — hearing you loud and clear.");
+  const audio = installFakeAudio();
+  window.localStorage.setItem(PIN_KEY, "web-tts-auto-phone");
+  const { fn, voiceRequests } = mockFetch("web-tts-auto-phone", {}, undefined, "ACK — hearing you loud and clear.");
   vi.stubGlobal("fetch", fn);
-  chat();
+  const { container } = chat();
 
-  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
-  expect(synth.texts().join(" ")).toContain("hearing you loud and clear");
-  window.history.replaceState({}, "", "/");
+  await typeAndSend(container, "hi from the phone");
+  await waitFor(() => expect(voiceRequests).toHaveLength(1));
+  expect(voiceRequests[0]?.text).toContain("hearing you loud and clear");
+  // the voice-note chip rides the reply, and playback auto-started
+  expect(await screen.findByRole("button", { name: /play voice note/i })).toBeInTheDocument();
+  await waitFor(() => expect(audio.played().length).toBeGreaterThan(0));
+  expect(audio.played()[0]?.src).toContain("/api/cockpit/voice/audio?id=");
 });
 
-it("auto mode speaks on the owner's typed path too (the per-thread clone lane)", async () => {
+it("auto mode renders on the owner's typed path too (the per-thread clone lane)", async () => {
   // CopilotChat submits typed sends through a per-thread CLONE of the
-  // registry agent — a registry-only subscriber never hears RUN_FINISHED
-  // there. The speech lane subscribes to both, verified here.
+  // registry agent — a registry-only subscriber never hears
+  // RUN_FINISHED there. The voice lane subscribes to both, verified.
   stubDeviceEnv({ ua: IPHONE_UA });
-  const synth = installFakeSynth();
+  installFakeAudio();
   window.localStorage.setItem(PIN_KEY, "web-tts-typed");
-  const { fn } = mockFetch("web-tts-typed", {}, undefined, "Typed path reply spoken aloud.");
+  const { fn, voiceRequests } = mockFetch("web-tts-typed", {}, undefined, "Typed path reply spoken aloud.");
   vi.stubGlobal("fetch", fn);
   const { container } = chat();
 
   await typeAndSend(container, "hello honey");
 
   await waitFor(() =>
-    expect(synth.texts().join(" ")).toContain("Typed path reply spoken aloud."),
+    expect(voiceRequests[0]?.text).toContain("Typed path reply spoken aloud."),
   );
 });
 
 it("auto mode stays silent on a non-phone run", async () => {
   stubDeviceEnv({ ua: MAC_UA, width: 1728 }); // default loopback origin → studio tag
-  const synth = installFakeSynth();
-  window.localStorage.setItem(SLOT_KEY, TTS_SLOT_SEED);
-  window.history.replaceState({}, "", "/cockpit/honey?q=from%20the%20studio");
-  const { fn } = mockFetch(null, {}, undefined, "A longer reply nobody should hear aloud.");
+  installFakeAudio();
+  window.localStorage.setItem(PIN_KEY, "web-tts-studio");
+  const { fn, voiceRequests } = mockFetch("web-tts-studio", {}, undefined, "A longer reply nobody should hear aloud.");
   vi.stubGlobal("fetch", fn);
-  chat();
+  const { container } = chat();
 
-  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
-  expect(synth.texts()).toEqual([]);
-  window.history.replaceState({}, "", "/");
+  await typeAndSend(container, "from the studio");
+  await screen.findByText("A longer reply nobody should hear aloud.");
+  expect(voiceRequests).toHaveLength(0);
+  expect(FakeAudio.instances).toHaveLength(0);
+  expect(
+    screen.queryByRole("button", { name: /play voice note/i }),
+  ).toBeNull();
 });
 
-it("off mode never speaks, even on a phone-tagged run, and shows no play button", async () => {
+it("off mode never renders, even on a phone-tagged run, and shows no play button", async () => {
   window.localStorage.setItem(HONEY_TTS_MODE_KEY, "off");
   stubDeviceEnv({ ua: IPHONE_UA });
-  const synth = installFakeSynth();
-  window.localStorage.setItem(SLOT_KEY, TTS_SLOT_SEED);
-  window.history.replaceState({}, "", "/cockpit/honey?q=quiet%20please");
-  const { fn } = mockFetch(null, {}, undefined, "This must never be spoken.");
+  installFakeAudio();
+  window.localStorage.setItem(PIN_KEY, "web-tts-off");
+  const { fn, voiceRequests } = mockFetch("web-tts-off", {}, undefined, "This must never be spoken.");
   vi.stubGlobal("fetch", fn);
-  chat();
+  const { container } = chat();
 
-  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
-  expect(synth.texts()).toEqual([]);
+  await typeAndSend(container, "quiet please");
+  await screen.findByText("This must never be spoken.");
+  expect(voiceRequests).toHaveLength(0);
+  expect(FakeAudio.instances).toHaveLength(0);
   expect(
     screen.queryByRole("button", { name: /read reply aloud/i }),
   ).toBeNull();
-  window.history.replaceState({}, "", "/");
+  expect(
+    screen.queryByRole("button", { name: /play voice note/i }),
+  ).toBeNull();
 });
 
-it("manual mode: a play button rides every assistant message and speaks on tap; off hides it live", async () => {
+it("manual mode: the play button renders on demand and plays; off hides it live", async () => {
   window.localStorage.setItem(HONEY_TTS_MODE_KEY, "manual");
   window.localStorage.setItem(PIN_KEY, "web-tts-manual");
-  const synth = installFakeSynth();
-  const { fn } = mockFetch("web-tts-manual", {}, undefined, "This is the spoken reply.");
+  const audio = installFakeAudio();
+  const { fn, voiceRequests } = mockFetch("web-tts-manual", {}, undefined, "This is the spoken reply.");
   vi.stubGlobal("fetch", fn);
   const { container } = chat();
 
   // the owner's own path: type and send — the reply streams and renders
   await typeAndSend(container, "read this back");
+  // auto never fired on the studio-tagged mount: the tap is the trigger
+  expect(voiceRequests).toHaveLength(0);
 
   const play = await screen.findByRole("button", { name: /read reply aloud/i });
   fireEvent.click(play);
   await waitFor(() =>
-    expect(synth.texts().join(" ")).toContain("This is the spoken reply."),
+    expect(voiceRequests[0]?.text).toContain("This is the spoken reply."),
   );
+  await waitFor(() => expect(audio.played().length).toBeGreaterThan(0));
   // flipping the mode to off hides the button without a remount
   setTtsMode("off");
   await waitFor(() =>
@@ -650,10 +677,10 @@ it("manual mode: a play button rides every assistant message and speaks on tap; 
   );
 });
 
-it("auto mode shows no play button (hands-free is the phone lane's shape)", async () => {
+it("auto mode shows no read-aloud button (hands-free is the phone lane's shape)", async () => {
   window.localStorage.setItem(PIN_KEY, "web-tts-auto");
-  const synth = installFakeSynth();
-  const { fn } = mockFetch("web-tts-auto", {}, undefined, "No button in auto mode.");
+  installFakeAudio();
+  const { fn, voiceRequests } = mockFetch("web-tts-auto", {}, undefined, "No button in auto mode.");
   vi.stubGlobal("fetch", fn);
   const { container } = chat();
 
@@ -663,8 +690,25 @@ it("auto mode shows no play button (hands-free is the phone lane's shape)", asyn
   expect(
     screen.queryByRole("button", { name: /read reply aloud/i }),
   ).toBeNull();
-  // and nothing spoke on its own (non-phone mount: studio heuristic)
-  expect(synth.texts()).toEqual([]);
+  // and nothing rendered on its own (non-phone mount: studio heuristic)
+  expect(voiceRequests).toHaveLength(0);
+});
+
+it("a failed render is VISIBLE: the reply's chip says so, the error chip too", async () => {
+  voiceRenderFails = true;
+  stubDeviceEnv({ ua: IPHONE_UA });
+  installFakeAudio();
+  window.localStorage.setItem(PIN_KEY, "web-tts-fail");
+  const { fn } = mockFetch("web-tts-fail", {}, undefined, "This render will fail.");
+  vi.stubGlobal("fetch", fn);
+  const { container } = chat();
+
+  await typeAndSend(container, "broken render");
+  expect(await screen.findByText("voice render failed")).toBeInTheDocument();
+  expect(await screen.findByText(/voice error: voice render failed/)).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /play voice note/i }),
+  ).toBeNull();
 });
 
 // The owner's own send path: type into the chat input and submit. The
@@ -684,24 +728,23 @@ async function typeAndSend(container: HTMLElement, text: string) {
   else fireEvent.keyDown(box, { key: "Enter" });
 }
 
-it("a new run cancels a reply still being spoken", async () => {
+it("a new run stops a voice note still playing", async () => {
   stubDeviceEnv({ ua: IPHONE_UA });
-  const synth = installFakeSynth();
+  installFakeAudio();
   window.history.replaceState({}, "", "/cockpit/honey?q=first");
   const { fn } = mockFetch(null, {}, undefined, "First spoken reply.");
   vi.stubGlobal("fetch", fn);
   chat();
 
-  await waitFor(() => expect(synth.texts().length).toBeGreaterThan(0));
-  // whatever the first run did internally, record its cancel baseline
-  const cancelledBefore = synth.isCancelled();
+  await waitFor(() => expect(FakeAudio.instances.length).toBeGreaterThan(0));
+  await waitFor(() => expect(FakeAudio.instances[0]?.play.mock.calls.length).toBeGreaterThan(0));
   // the Visuals tab's ask-honey hand-off fires a second run through
   // the same surface — the old voice must stop before the new run
   window.dispatchEvent(
     new CustomEvent("cockpit-ask-honey", { detail: "second question" }),
   );
   await waitFor(() =>
-    expect(synth.isCancelled()).toBeGreaterThan(cancelledBefore),
+    expect(FakeAudio.instances[0]?.pause.mock.calls.length).toBeGreaterThan(0),
   );
   window.history.replaceState({}, "", "/");
 });
