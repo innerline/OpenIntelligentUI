@@ -827,3 +827,42 @@ html.dark .cockpit-app {
   font-size: 10px;
   opacity: 0.7;
 }
+
+/* --- Honey TTS (device-input-matrix slice 3, iPhone voice contract):
+   the mode chip reuses the owner-device chip grammar above; the stop
+   chip tints accent while a reply is being spoken; manual mode's play
+   button rides the assistant-message toolbar. --- */
+
+.tts-chip .owner-device-dot.pinned {
+  background: var(--ck-accent);
+}
+
+.tts-stop-btn {
+  align-self: center;
+  flex-shrink: 0;
+  border-color: var(--ck-accent-border);
+  color: var(--ck-accent);
+  opacity: 0.95;
+}
+
+.tts-stop-btn:hover {
+  opacity: 1;
+}
+
+.tts-play-btn {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.tts-play-btn:hover {
+  opacity: 1;
+  background: var(--ck-row-hover);
+}

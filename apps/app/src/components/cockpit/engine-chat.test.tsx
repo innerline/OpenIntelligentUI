@@ -5,6 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { Providers } from "@/app/providers";
 import { EngineChat } from "@/components/cockpit/engine-chat";
 import { detectOwnerDevice } from "@/lib/owner-device";
+import { HONEY_TTS_MODE_KEY, setTtsMode } from "@/lib/honey-tts";
 
 // Cross-device rejoin (kanban/cockpit-thread-continuity, 2026-10-18):
 // the localStorage pin is per browser, so each device minted its own
@@ -19,11 +20,15 @@ const PIN_KEY = "cockpit.thread.honey";
 // providers/agent internals, replace only the HTTP boundary. runPayloads
 // records every agent run body the surface fires (device tag lives there,
 // kanban/device-input-matrix). visual rides RUN_FINISHED's result — the
-// adapter's parsed VISUAL machine line (slice 2).
+// adapter's parsed VISUAL machine line (slice 2). assistantText (slice 3)
+// STREAMS the run's reply as TEXT_MESSAGE events — never on the connect
+// lane — so the TTS lane sees exactly what a real streamed reply gives
+// it at RUN_FINISHED.
 function mockFetch(
   anchor: string | null,
   transcripts: Record<string, unknown>,
   runVisual: unknown = undefined,
+  assistantText?: string,
 ) {
   const threadFetches: string[] = [];
   const runPayloads: Record<string, unknown>[] = [];
@@ -58,6 +63,13 @@ function mockFetch(
     const events = [
       { type: "RUN_STARTED", threadId: payload.threadId, runId: payload.runId },
       ...(connecting ? [{ type: "MESSAGES_SNAPSHOT", messages: [] }] : []),
+      ...(assistantText !== undefined && !connecting
+        ? [
+            { type: "TEXT_MESSAGE_START", messageId: "assistant-run-reply", role: "assistant" },
+            { type: "TEXT_MESSAGE_CONTENT", messageId: "assistant-run-reply", delta: assistantText },
+            { type: "TEXT_MESSAGE_END", messageId: "assistant-run-reply" },
+          ]
+        : []),
       ...(runVisual !== undefined
         ? [
             {
@@ -280,10 +292,12 @@ const SLOT_KEY = "cockpit.visual.honey";
 
 it("publishes the run's visual pointer to the sidebar slot", async () => {
   window.history.replaceState({}, "", "/cockpit/honey?q=show%20me%20the%20map");
+  // a real reply streams its text; the visual rides RUN_FINISHED (the
+  // iPhone-voice slice pinned the streamed-reply shape into the mock)
   const { fn } = mockFetch(null, {}, {
     kind: "map",
     path: "Vision/Agent Visuals/example.excalidraw.md",
-  });
+  }, "Here is the map.");
   vi.stubGlobal("fetch", fn);
 
   const seen: { agent?: string; visual?: unknown }[] = [];
@@ -315,7 +329,7 @@ it("clears the slot when the run points at nothing", async () => {
     JSON.stringify({ kind: "plex", path: "K-Plex/Mind Map.md" }),
   );
   window.history.replaceState({}, "", "/cockpit/honey?q=plain%20answer");
-  const { fn } = mockFetch(null, {}); // RUN_FINISHED carries visual:null
+  const { fn } = mockFetch(null, {}, undefined, "A plain answer."); // RUN_FINISHED carries visual:null
   vi.stubGlobal("fetch", fn);
 
   chat();
@@ -508,4 +522,197 @@ it("test mode flags the run, mints unpinned, never reads the anchor", async () =
   // the surface says TEST plainly
   expect(screen.getByText(/TEST MODE/)).toBeInTheDocument();
   window.history.replaceState({}, "", "/");
+});
+
+// --- iPhone voice (kanban/device-input-matrix slice 3, 2026-10-20) ---
+// Web Speech API, fully on-device. auto (default) speaks the completed
+// reply of a phone-tagged run; manual puts a play button on every
+// assistant message; off never speaks. A new run cancels in-flight
+// speech. jsdom has no speechSynthesis — a fake records the queue.
+
+class FakeUtterance {
+  text: string;
+  volume = 1;
+  onend: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
+function installFakeSynth() {
+  const spoken: FakeUtterance[] = [];
+  let cancelled = 0;
+  vi.stubGlobal("speechSynthesis", {
+    speak: (u: FakeUtterance) => spoken.push(u),
+    cancel: () => {
+      cancelled += 1;
+    },
+    speaking: false,
+  });
+  vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
+  return {
+    texts: () => spoken.map((u) => u.text),
+    isCancelled: () => cancelled,
+  };
+}
+
+// RUN_FINISHED also clears the visual slot — a cheap deterministic
+// signal that the run (and its speech decision) has fully processed.
+const TTS_SLOT_SEED = JSON.stringify({ kind: "file", path: "seed.md" });
+
+it("auto mode speaks the completed reply on a phone-tagged run", async () => {
+  stubDeviceEnv({ ua: IPHONE_UA });
+  const synth = installFakeSynth();
+  window.localStorage.setItem(SLOT_KEY, TTS_SLOT_SEED);
+  window.history.replaceState({}, "", "/cockpit/honey?q=hi%20from%20the%20phone");
+  const { fn } = mockFetch(null, {}, undefined, "ACK — hearing you loud and clear.");
+  vi.stubGlobal("fetch", fn);
+  chat();
+
+  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
+  expect(synth.texts().join(" ")).toContain("hearing you loud and clear");
+  window.history.replaceState({}, "", "/");
+});
+
+it("auto mode speaks on the owner's typed path too (the per-thread clone lane)", async () => {
+  // CopilotChat submits typed sends through a per-thread CLONE of the
+  // registry agent — a registry-only subscriber never hears RUN_FINISHED
+  // there. The speech lane subscribes to both, verified here.
+  stubDeviceEnv({ ua: IPHONE_UA });
+  const synth = installFakeSynth();
+  window.localStorage.setItem(PIN_KEY, "web-tts-typed");
+  const { fn } = mockFetch("web-tts-typed", {}, undefined, "Typed path reply spoken aloud.");
+  vi.stubGlobal("fetch", fn);
+  const { container } = chat();
+
+  await typeAndSend(container, "hello honey");
+
+  await waitFor(() =>
+    expect(synth.texts().join(" ")).toContain("Typed path reply spoken aloud."),
+  );
+});
+
+it("auto mode stays silent on a non-phone run", async () => {
+  stubDeviceEnv({ ua: MAC_UA, width: 1728 }); // default loopback origin → studio tag
+  const synth = installFakeSynth();
+  window.localStorage.setItem(SLOT_KEY, TTS_SLOT_SEED);
+  window.history.replaceState({}, "", "/cockpit/honey?q=from%20the%20studio");
+  const { fn } = mockFetch(null, {}, undefined, "A longer reply nobody should hear aloud.");
+  vi.stubGlobal("fetch", fn);
+  chat();
+
+  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
+  expect(synth.texts()).toEqual([]);
+  window.history.replaceState({}, "", "/");
+});
+
+it("off mode never speaks, even on a phone-tagged run, and shows no play button", async () => {
+  window.localStorage.setItem(HONEY_TTS_MODE_KEY, "off");
+  stubDeviceEnv({ ua: IPHONE_UA });
+  const synth = installFakeSynth();
+  window.localStorage.setItem(SLOT_KEY, TTS_SLOT_SEED);
+  window.history.replaceState({}, "", "/cockpit/honey?q=quiet%20please");
+  const { fn } = mockFetch(null, {}, undefined, "This must never be spoken.");
+  vi.stubGlobal("fetch", fn);
+  chat();
+
+  await waitFor(() => expect(window.localStorage.getItem(SLOT_KEY)).toBeNull());
+  expect(synth.texts()).toEqual([]);
+  expect(
+    screen.queryByRole("button", { name: /read reply aloud/i }),
+  ).toBeNull();
+  window.history.replaceState({}, "", "/");
+});
+
+it("manual mode: a play button rides every assistant message and speaks on tap; off hides it live", async () => {
+  window.localStorage.setItem(HONEY_TTS_MODE_KEY, "manual");
+  window.localStorage.setItem(PIN_KEY, "web-tts-manual");
+  const synth = installFakeSynth();
+  const { fn } = mockFetch("web-tts-manual", {}, undefined, "This is the spoken reply.");
+  vi.stubGlobal("fetch", fn);
+  const { container } = chat();
+
+  // the owner's own path: type and send — the reply streams and renders
+  await typeAndSend(container, "read this back");
+
+  const play = await screen.findByRole("button", { name: /read reply aloud/i });
+  fireEvent.click(play);
+  await waitFor(() =>
+    expect(synth.texts().join(" ")).toContain("This is the spoken reply."),
+  );
+  // flipping the mode to off hides the button without a remount
+  setTtsMode("off");
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: /read reply aloud/i }),
+    ).toBeNull(),
+  );
+});
+
+it("auto mode shows no play button (hands-free is the phone lane's shape)", async () => {
+  window.localStorage.setItem(PIN_KEY, "web-tts-auto");
+  const synth = installFakeSynth();
+  const { fn } = mockFetch("web-tts-auto", {}, undefined, "No button in auto mode.");
+  vi.stubGlobal("fetch", fn);
+  const { container } = chat();
+
+  await typeAndSend(container, "anything");
+
+  await screen.findByText("No button in auto mode.");
+  expect(
+    screen.queryByRole("button", { name: /read reply aloud/i }),
+  ).toBeNull();
+  // and nothing spoke on its own (non-phone mount: studio heuristic)
+  expect(synth.texts()).toEqual([]);
+});
+
+// The owner's own send path: type into the chat input and submit. The
+// typed run rides CopilotChat's per-thread clone of the agent — a
+// different instance than engine-chat's registry agent.
+async function typeAndSend(container: HTMLElement, text: string) {
+  const box = await waitFor(() => {
+    const el = container.querySelector(
+      "textarea, [contenteditable=true], input[type=text]",
+    );
+    if (!el) throw new Error("chat input not rendered yet");
+    return el as HTMLElement;
+  });
+  fireEvent.change(box, { target: { value: text } });
+  const form = box.closest("form");
+  if (form) fireEvent.submit(form);
+  else fireEvent.keyDown(box, { key: "Enter" });
+}
+
+it("a new run cancels a reply still being spoken", async () => {
+  stubDeviceEnv({ ua: IPHONE_UA });
+  const synth = installFakeSynth();
+  window.history.replaceState({}, "", "/cockpit/honey?q=first");
+  const { fn } = mockFetch(null, {}, undefined, "First spoken reply.");
+  vi.stubGlobal("fetch", fn);
+  chat();
+
+  await waitFor(() => expect(synth.texts().length).toBeGreaterThan(0));
+  // whatever the first run did internally, record its cancel baseline
+  const cancelledBefore = synth.isCancelled();
+  // the Visuals tab's ask-honey hand-off fires a second run through
+  // the same surface — the old voice must stop before the new run
+  window.dispatchEvent(
+    new CustomEvent("cockpit-ask-honey", { detail: "second question" }),
+  );
+  await waitFor(() =>
+    expect(synth.isCancelled()).toBeGreaterThan(cancelledBefore),
+  );
+  window.history.replaceState({}, "", "/");
+});
+
+it("the voice chip pins the output mode and it persists", async () => {
+  const { getByRole } = chat();
+  const chip = getByRole("button", { name: /voice output/i });
+  expect(chip).toHaveTextContent("auto"); // default
+  fireEvent.click(chip);
+  fireEvent.click(getByRole("menuitemradio", { name: /^off/ }));
+  expect(window.localStorage.getItem(HONEY_TTS_MODE_KEY)).toBe("off");
+  // same mount shows the pinned mode
+  expect(getByRole("button", { name: /voice output/i })).toHaveTextContent("off");
 });

@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CopilotChat, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
+import { CopilotChat, useAgent, useCopilotKit, CopilotChatAssistantMessage } from "@copilotkit/react-core/v2";
 import { uuid } from "@/lib/uuid";
 import { detectOwnerDevice, getOwnerDeviceSource, OWNER_DEVICE_CHANGED_EVENT, type OwnerDevice, type OwnerDeviceSource } from "@/lib/owner-device";
 import { OwnerDeviceChip } from "@/components/cockpit/owner-device-chip";
+import { AssistantMessageWithSpeech, SpeakingChip, TtsModeChip } from "@/components/cockpit/tts-speech";
+import { cancelSpeech, maybeAutoSpeak, unlockSpeech } from "@/lib/honey-tts";
 import { isVisualPointer, publishVisual } from "@/lib/visual-pointer";
 import { ReaderScrollView } from "@/components/chat/reader-scroll-view";
-import { AnswerMarkdown } from "@/components/chat/answer-markdown";
 import { useEngineStatuses } from "./engine-status";
 import "./cockpit.css";
 
@@ -23,7 +24,13 @@ import "./cockpit.css";
 // Stable prop identities for CopilotChat — inline literals re-created on
 // every render risk remounting chat internals (draft input included) on
 // unrelated re-renders (status polls). Keep these at module level.
-const MESSAGE_VIEW = { assistantMessage: { markdownRenderer: AnswerMarkdown } };
+// The assistant slot is Honey's TTS wrapper (kanban/device-input-matrix
+// slice 3): manual mode's read-aloud button rides every reply. The cast
+// bridges a slot type that only models the DEFAULT component's statics —
+// resolveSlotComponent accepts any component at runtime.
+const MESSAGE_VIEW = {
+  assistantMessage: AssistantMessageWithSpeech,
+} as { assistantMessage: typeof CopilotChatAssistantMessage };
 
 // owner 2026-10-17: tab switch in Safari discarded the page; CopilotKit
 // minted a fresh thread per mount and the engine session orphaned —
@@ -93,6 +100,35 @@ export function EngineChat({
     window.addEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
     return () => window.removeEventListener(OWNER_DEVICE_CHANGED_EVENT, onChange);
   }, []);
+  // The RUN_FINISHED speech lane below must read the tag the run
+  // CARRIED, not a stale closure — the agent subscription below does
+  // not re-subscribe on device changes, so it reads through this ref.
+  const deviceRef = useRef<OwnerDevice>(deviceTag.device);
+  useEffect(() => {
+    deviceRef.current = deviceTag.device;
+  }, [deviceTag.device]);
+  // iPhone voice (kanban/device-input-matrix slice 3): iOS Safari
+  // refuses speechSynthesis until speak() ran once inside a user
+  // gesture — prime it on the first tap anywhere in the page (the
+  // send-button tap counts). capture phase, before React handlers.
+  useEffect(() => {
+    const onPointerDown = () => unlockSpeech();
+    document.addEventListener("pointerdown", onPointerDown, { capture: true });
+    return () =>
+      document.removeEventListener("pointerdown", onPointerDown, {
+        capture: true,
+      });
+  }, []);
+  // iOS kills synthesis when the tab hides — keep the speaking state
+  // honest instead of leaving a dead stop chip on screen.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") cancelSpeech();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
   // Test-mode isolation (unified-honey K1 go-live gate, 2026-10-19):
   // ?test=1 mounts the SANDBOX lane. The adapter quarantines flagged runs
   // (forwardedProps.testMode, and any test- namespace thread even without
@@ -113,6 +149,14 @@ export function EngineChat({
   const [threadId, setThreadId] = useState(() =>
     isTestMode ? "test-" + uuid() : loadThreadId(agentId),
   );
+  // The speech lane's second ear (iPhone voice slice 3): CopilotChat
+  // renders and submits through a per-thread CLONE of the registry
+  // agent (its own useAgent(threadId) lane — verified: a typed send's
+  // RUN_FINISHED never reaches a registry-only subscriber). The owner's
+  // typed sends ride the clone; this surface's own sends (deep link,
+  // ask-honey hand-off) ride the registry agent. `updates: []` keeps
+  // this hook's internal re-render machinery off — we only subscribe.
+  const { agent: threadAgent } = useAgent({ agentId, threadId, updates: [] });
 
   // Cross-device rejoin (kanban/cockpit-thread-continuity, 2026-10-18):
   // the localStorage pin is per BROWSER — phone and laptop each minted
@@ -227,8 +271,52 @@ export function EngineChat({
   }, [agentId, send]);
 
   useEffect(() => {
-    const subscription = agent.subscribe({
-      onRunInitialized: () => setError(null),
+    // The last assistant text THIS run streamed — the iPhone voice lane
+    // speaks only replies the run produced (TEXT_MESSAGE deltas), never
+    // history a connect/restore lane replays as a snapshot.
+    const streamedReply = { id: null as string | null, text: null as string | null };
+    // Tagged so the registry subscription and the clone subscription can
+    // tell each other apart: a per-thread clone INHERITS copies of the
+    // registry agent's subscribers at clone time (AbstractAgent.clone),
+    // so an inherited copy must not be double-subscribed.
+    const SPEECH_SUB_TAG = "__honeyTtsSpeech";
+    type SpeechSubscriber = Parameters<typeof agent.subscribe>[0] & {
+      [SPEECH_SUB_TAG]?: boolean;
+    };
+    const handlers: SpeechSubscriber = {
+      // A new run cancels any reply still being spoken — Honey never
+      // talks over herself (iPhone voice slice).
+      onRunInitialized: () => {
+        setError(null);
+        cancelSpeech();
+      },
+      onTextMessageStartEvent: ({
+        event,
+      }: {
+        event?: { messageId?: string; role?: string };
+      }) => {
+        // only assistant text streams over AG-UI — track its id
+        if (event?.role === "assistant" && typeof event.messageId === "string") {
+          streamedReply.id = event.messageId;
+        }
+      },
+      onTextMessageEndEvent: ({
+        event,
+        textMessageBuffer,
+      }: {
+        event?: { messageId?: string };
+        textMessageBuffer?: string;
+      }) => {
+        // textMessageBuffer is the completed text of the ended message
+        if (
+          typeof event?.messageId === "string" &&
+          event.messageId === streamedReply.id &&
+          typeof textMessageBuffer === "string" &&
+          textMessageBuffer.trim().length > 0
+        ) {
+          streamedReply.text = textMessageBuffer;
+        }
+      },
       // Visual pointer slice (kanban/device-input-matrix slice 2): the
       // adapter strips the VISUAL machine line from the reply and parks
       // the parsed pointer on RUN_FINISHED's result — AG-UI's run-result
@@ -242,12 +330,43 @@ export function EngineChat({
         event: { result?: { visual?: unknown } };
       }) => {
         setError(null);
+        // Connect/restore lanes (no streamed assistant text) publish and
+        // speak nothing — their RUN_FINISHED would otherwise wipe the
+        // pointer an earlier reply left in the sidebar.
+        const ran = streamedReply.id !== null;
+        streamedReply.id = null;
+        const spoken = streamedReply.text;
+        streamedReply.text = null;
+        if (!ran) return;
+        // Visual pointer slice (kanban/device-input-matrix slice 2): the
+        // adapter strips the VISUAL machine line from the reply and parks
+        // the parsed pointer on RUN_FINISHED's result — AG-UI's run-result
+        // metadata lane, the engine->cockpit mirror of the device tag.
+        // null = this reply pointed at nothing; the sidebar must not
+        // linger on an older artifact. Agent-level subscription, so BOTH
+        // send paths (provider properties + the direct runAgent) report.
         const raw = event?.result?.visual;
         publishVisual(agentId, isVisualPointer(raw) ? raw : null);
+        // iPhone voice (slice 3): in auto mode a phone-tagged run's
+        // completed reply is spoken on-device (Web Speech, nothing
+        // leaves the browser) — the reply this run streamed, if any.
+        if (spoken) maybeAutoSpeak(spoken, deviceRef.current);
       },
-    });
-    return () => subscription.unsubscribe();
-  }, [agent, agentId]);
+    };
+    handlers[SPEECH_SUB_TAG] = true;
+    const subscriptions = [agent.subscribe(handlers)];
+    if (
+      threadAgent !== agent &&
+      !threadAgent.subscribers.some(
+        (s) => (s as SpeechSubscriber)[SPEECH_SUB_TAG] === true,
+      )
+    ) {
+      subscriptions.push(threadAgent.subscribe(handlers));
+    }
+    return () => {
+      for (const s of subscriptions) s.unsubscribe();
+    };
+  }, [agent, threadAgent, agentId]);
 
   // ?q= deep link — send once, then strip the param so a refresh asks
   // nothing. Same path a human takes (addMessage + runAgent), so thread
@@ -287,6 +406,10 @@ export function EngineChat({
             sent; click to pin phone/ipad/laptop/studio — the pin beats the
             loopback heuristic that misfired studio-at-laptop. */}
         <OwnerDeviceChip />
+        {/* Voice output (iPhone contract, slice 3): mode toggle + the
+            stop chip that appears only while a reply is being spoken. */}
+        <TtsModeChip />
+        <SpeakingChip />
       </div>
       {isTestMode && (
         <div className="cockpit-chat-banner test" role="status">
