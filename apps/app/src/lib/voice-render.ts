@@ -1,17 +1,28 @@
 // Server-side voice rendering for Honey's replies (kanban
 // /device-input-matrix, iPhone contract slice: "chat with TTS"). Four
 // builds of on-device speechSynthesis stayed silent on the owner's
-// phone — this lane bypasses Web Speech entirely: the macOS Studio's
-// native `say` CLI renders the reply into an .m4a ONCE, the client
-// plays it back as a voice note. Server-only module — no window, no
-// "use client".
+// phone — this lane bypasses Web Speech entirely: the reply is
+// rendered into an .m4a ONCE server-side, the client plays it back as
+// a voice note. Two engines, same machinery:
+//
+//   piper — local neural TTS (piper-tts in apps/app/.piper-venv,
+//           voices in runtime/piper/). Fully local, no cloud. Chosen
+//           when the override file asks for it ("piper:<model>", e.g.
+//           "piper:en_US-amy-medium") AND the binary+model exist;
+//           any piper failure falls back to `say` with a warning —
+//           never a silent failure, never a missing voice note.
+//   say   — the macOS native CLI. The original engine and the
+//           fallback; behavior unchanged.
 //
 //   POST /api/cockpit/voice/render  → lib renders here, returns a URL
 //   GET  /api/cockpit/voice/audio   → serves the rendered file
 //
 // Caching: the file name is a sha256 of (voice, rate, final text), so
-// identical replies never re-render. Files older than 24h are pruned
-// on each render (best-effort — a prune failure never fails a render).
+// identical replies never re-render. The cache identity includes the
+// engine+voice ("piper:en_US-amy-medium" vs a `say` voice name), so
+// piper and say renders never collide. Files older than 24h are
+// pruned on each render (best-effort — a prune failure never fails a
+// render).
 
 import { createHash } from "crypto";
 import { execFile } from "child_process";
@@ -33,6 +44,12 @@ export const VOICE_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // `say` must answer within this or the render fails visibly.
 const SAY_TIMEOUT_MS = 30_000;
 
+// Piper renders locally (measured: ~1.1s cold for two sentences,
+// ~2.3s at the full text cap on the Studio) — 30s is a generous
+// failure ceiling matching the say posture.
+const PIPER_TIMEOUT_MS = 30_000;
+const AFCONVERT_TIMEOUT_MS = 10_000;
+
 // Preference order from the slice design; matched against the REAL
 // `say -v ?` listing at render time (names are normalized — "Ava
 // (Premium)" matches a listed "Ava (Premium)", a bare "Ava" matches
@@ -41,12 +58,15 @@ const SAY_TIMEOUT_MS = 30_000;
 // voice (Bells, Bad News, …).
 // Runtime override: first line of apps/app/runtime/voice-override.txt is
 // prepended to the preference order at render time — instant voice flips
-// without rebuilds (owner voice-pick mechanism, 2026-10-20).
+// without rebuilds (owner voice-pick mechanism, 2026-10-20). A line of
+// the form "piper:<model>" selects the piper engine instead (see
+// piperOverride). MWP_VOICE_OVERRIDE replaces the file for tests.
 function readVoiceOverride(): string | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require("fs") as typeof import("fs");
-    const path = require("path") as typeof import("path");
+    if (process.env.MWP_VOICE_OVERRIDE !== undefined) {
+      const v = process.env.MWP_VOICE_OVERRIDE.trim().split("\n")[0];
+      return v || null;
+    }
     const f = path.join(process.cwd(), "runtime", "voice-override.txt");
     const v = fs.readFileSync(f, "utf8").trim().split("\n")[0];
     return v || null;
@@ -164,6 +184,42 @@ export function voiceDir(): string {
   return process.env.MWP_VOICE_DIR || path.join(process.cwd(), "runtime", "voice");
 }
 
+// Where piper voices live: the launchd service runs from apps/app, so
+// the default is that tree's runtime/piper/ (git-ignored, like all of
+// runtime/); MWP_PIPER_DIR overrides for tests and unusual mounts.
+export function piperModelDir(): string {
+  return process.env.MWP_PIPER_DIR || path.join(process.cwd(), "runtime", "piper");
+}
+
+// The piper CLI from the app-local venv (apps/app/.piper-venv, also
+// git-ignored — installed by the voice lane, not pnpm). MWP_PIPER_BIN
+// overrides for tests and unusual mounts.
+export function piperBin(): string {
+  return (
+    process.env.MWP_PIPER_BIN || path.join(process.cwd(), ".piper-venv", "bin", "piper")
+  );
+}
+
+// The override's engine selector: "piper:en_US-amy-medium" →
+// "en_US-amy-medium". Anything else (say voice names, blank) → null.
+export function piperOverride(): string | null {
+  const v = readVoiceOverride();
+  if (!v || !v.startsWith("piper:")) return null;
+  const model = v.slice("piper:".length).trim();
+  return model || null; // a bare "piper:" is not a piper ask
+}
+
+// A model is usable when its .onnx AND its .onnx.json sit in the model
+// dir. The binary must exist too — a missing piece means the owner
+// flipped the override before/after an install; the render falls back
+// to `say` with a warning instead of failing.
+export function piperAvailable(model: string, deps: VoiceDeps): boolean {
+  const onnx = path.join(piperModelDir(), `${model}.onnx`);
+  return (
+    deps.exists(piperBin()) && deps.exists(onnx) && deps.exists(`${onnx}.json`)
+  );
+}
+
 // Injectable process surface — tests swap these; production binds the
 // real ones. Keeping them in one object keeps the module honest about
 // every side effect it performs.
@@ -178,6 +234,7 @@ export interface VoiceDeps {
   readdir: (p: string) => string[];
   unlink: (p: string) => void;
   mkdir: (p: string) => void;
+  writeFile: (p: string, data: string) => void;
 }
 
 export const realVoiceDeps: VoiceDeps = {
@@ -198,6 +255,7 @@ export const realVoiceDeps: VoiceDeps = {
   readdir: (p) => fs.readdirSync(p),
   unlink: (p) => fs.unlinkSync(p),
   mkdir: (p) => fs.mkdirSync(p, { recursive: true }),
+  writeFile: (p, data) => fs.writeFileSync(p, data),
 };
 
 let listedVoices: Promise<readonly SayVoice[]> | null = null;
@@ -243,34 +301,118 @@ export interface VoiceRenderResult {
   hash: string; // file basename (hex, no extension)
   file: string; // absolute path
   cached: boolean;
-  voice: string | null; // the `say -v` name used, null = system default
+  voice: string | null; // engine+voice used: "piper:<model>" or the `say -v` name, null = system default
 }
 
 const inFlight = new Map<string, Promise<VoiceRenderResult>>();
 
-// Render one reply to <dir>/<hash>.m4a with `say`, reusing an existing
-// render when the hash matches. Identical concurrent requests share a
-// single `say` invocation (the in-flight map) so the same file is
-// never written twice at once.
-export async function renderVoiceFile(
-  text: string,
-  deps: VoiceDeps = realVoiceDeps,
+// One render through the shared hash-cache machinery: reuse an
+// existing file, dedupe concurrent identical renders (in-flight
+// map), prune, and let `speak` do the engine-specific work of
+// producing <file> (.m4a).
+async function renderVia(
+  identity: string | null,
+  final: string,
+  deps: VoiceDeps,
+  speak: (file: string) => Promise<void>,
 ): Promise<VoiceRenderResult> {
-  const final = capVoiceText(sanitizeVoiceText(text));
-  if (!final) throw new Error("nothing to speak");
-  const voices = await listSayVoices(deps);
-  const voice = pickSayVoice(voices);
-  const hash = voiceFileHash(final, voice);
+  const hash = voiceFileHash(final, identity);
   const dir = voiceDir();
   const file = path.join(dir, `${hash}.m4a`);
   const running = inFlight.get(hash);
   if (running) return running;
   const job = (async (): Promise<VoiceRenderResult> => {
     if (deps.exists(file)) {
-      return { hash, file, cached: true, voice };
+      return { hash, file, cached: true, voice: identity };
     }
     deps.mkdir(dir);
+    await speak(file);
+    pruneVoiceFiles(dir, deps);
+    return { hash, file, cached: false, voice: identity };
+  })()
+    .catch((e: unknown) => {
+      throw e instanceof Error ? e : new Error(String(e));
+    })
+    .finally(() => {
+      inFlight.delete(hash);
+    });
+  inFlight.set(hash, job);
+  return job;
+}
+
+// Piper speaks `final` into <file>.m4a: text → temp .txt (the CLI
+// takes a file, not an argv string), piper → temp .wav, afconvert →
+// the .m4a the audio route serves (AAC ~5x smaller than the wav;
+// same container every say render already uses). Temps are cleaned
+// up best-effort — a stray temp never fails the render.
+async function piperSpeak(
+  model: string,
+  final: string,
+  file: string,
+  deps: VoiceDeps,
+): Promise<void> {
+  const dir = path.dirname(file);
+  const txt = path.join(dir, `${path.basename(file)}.txt`);
+  const wav = path.join(dir, `${path.basename(file)}.wav`);
+  const onnx = path.join(piperModelDir(), `${model}.onnx`);
+  deps.writeFile(txt, final);
+  try {
     await deps.exec(
+      piperBin(),
+      ["-m", onnx, "-i", txt, "-f", wav],
+      { timeout: PIPER_TIMEOUT_MS },
+    );
+    await deps.exec(
+      "afconvert",
+      ["-f", "m4af", "-d", "aac", "-b", "64000", wav, file],
+      { timeout: AFCONVERT_TIMEOUT_MS },
+    );
+  } finally {
+    try {
+      deps.unlink(txt);
+      deps.unlink(wav);
+    } catch {
+      // raced away or never written — prune ignores non-.m4a anyway
+    }
+  }
+}
+
+// Render one reply to <dir>/<hash>.m4a, reusing an existing render
+// when the hash matches. The piper engine is chosen by the runtime
+// override ("piper:<model>"); when piper is unavailable or fails
+// mid-render the say lane takes over with a warning — the owner
+// always gets a voice note. Identical concurrent requests share a
+// single render (the in-flight map).
+export async function renderVoiceFile(
+  text: string,
+  deps: VoiceDeps = realVoiceDeps,
+): Promise<VoiceRenderResult> {
+  const final = capVoiceText(sanitizeVoiceText(text));
+  if (!final) throw new Error("nothing to speak");
+
+  const model = piperOverride();
+  if (model) {
+    if (piperAvailable(model, deps)) {
+      try {
+        return await renderVia(`piper:${model}`, final, deps, (file) =>
+          piperSpeak(model, final, file, deps),
+        );
+      } catch (e) {
+        console.warn(
+          `[voice] piper render failed (${e instanceof Error ? e.message : String(e)}) — falling back to say`,
+        );
+      }
+    } else {
+      console.warn(
+        `[voice] piper binary or model "${model}" missing — falling back to say`,
+      );
+    }
+  }
+
+  const voices = await listSayVoices(deps);
+  const voice = pickSayVoice(voices);
+  return renderVia(voice, final, deps, (file) =>
+    deps.exec(
       "say",
       [
         "-o",
@@ -282,18 +424,8 @@ export async function renderVoiceFile(
         final,
       ],
       { timeout: SAY_TIMEOUT_MS },
-    );
-    pruneVoiceFiles(dir, deps);
-    return { hash, file, cached: false, voice };
-  })()
-    .catch((e: unknown) => {
-      throw e instanceof Error ? e : new Error(String(e));
-    })
-    .finally(() => {
-      inFlight.delete(hash);
-    });
-  inFlight.set(hash, job);
-  return job;
+    ).then(() => undefined),
+  );
 }
 
 // Test seam: clear the cached voice listing + in-flight map so a test

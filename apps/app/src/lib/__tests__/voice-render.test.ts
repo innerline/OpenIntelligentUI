@@ -15,6 +15,8 @@ const hoisted = vi.hoisted(() => ({
   listing: "",
   sayCalls: [] as { file: string; args: string[] }[],
   failRenders: false,
+  failPiper: false,
+  failAfconvert: false,
 }));
 
 vi.mock("child_process", () => {
@@ -27,6 +29,28 @@ vi.mock("child_process", () => {
     hoisted.sayCalls.push({ file, args });
     if (hoisted.failRenders) {
       cb(new Error("say exploded"));
+      return;
+    }
+    if (path.basename(file) === "piper") {
+      if (hoisted.failPiper) {
+        cb(new Error("piper exploded"));
+        return;
+      }
+      // `piper` would write the wav at -f — do exactly that
+      const out = args[args.indexOf("-f") + 1] as string;
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, Buffer.from("fake-piper-wav"));
+      cb(null, "", "");
+      return;
+    }
+    if (path.basename(file) === "afconvert") {
+      if (hoisted.failAfconvert) {
+        cb(new Error("afconvert exploded"));
+        return;
+      }
+      // afconvert's LAST argument is the output file
+      fs.writeFileSync(args[args.length - 1] as string, Buffer.from("fake-aac-bytes"));
+      cb(null, "", "");
       return;
     }
     if (file !== "say") {
@@ -52,6 +76,8 @@ import {
   capVoiceText,
   parseSayVoices,
   pickSayVoice,
+  piperAvailable,
+  piperOverride,
   pruneVoiceFiles,
   resetVoiceRenderCaches,
   sanitizeVoiceText,
@@ -64,18 +90,44 @@ import { GET as audioGET } from "@/app/api/cockpit/voice/audio/route";
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "voice-notes-test-"));
 const voiceDir = path.join(scratch, "voice");
+const piperDir = path.join(scratch, "piper");
+const piperBinPath = path.join(scratch, "bin", "piper");
+
+// Install a fake piper (bin + model files) under the scratch dir and
+// point the env seams at it — route tests use the REAL fs surface.
+function installFakePiper(model = "en_US-amy-medium"): void {
+  process.env.MWP_PIPER_BIN = piperBinPath;
+  process.env.MWP_PIPER_DIR = piperDir;
+  fs.mkdirSync(path.dirname(piperBinPath), { recursive: true });
+  fs.writeFileSync(piperBinPath, "#!/bin/sh\n");
+  fs.mkdirSync(piperDir, { recursive: true });
+  fs.writeFileSync(path.join(piperDir, `${model}.onnx`), "fake-onnx");
+  fs.writeFileSync(path.join(piperDir, `${model}.onnx.json`), "{}");
+}
 
 beforeEach(() => {
   process.env.MWP_VOICE_DIR = voiceDir;
+  // pin the override — the machine's real runtime/voice-override.txt
+  // (live owner config, may say "piper:…") must not steer say tests
+  process.env.MWP_VOICE_OVERRIDE = "";
   hoisted.listing = STUDIO_LISTING; // reset per test — no leak
   hoisted.sayCalls.length = 0;
   hoisted.failRenders = false;
+  hoisted.failPiper = false;
+  hoisted.failAfconvert = false;
   resetVoiceRenderCaches();
   fs.rmSync(voiceDir, { recursive: true, force: true });
+  // no piper install leaks between tests — tests that need one call
+  // installFakePiper() themselves
+  fs.rmSync(piperDir, { recursive: true, force: true });
+  fs.rmSync(path.dirname(piperBinPath), { recursive: true, force: true });
 });
 
 afterEach(() => {
   delete process.env.MWP_VOICE_DIR;
+  delete process.env.MWP_VOICE_OVERRIDE;
+  delete process.env.MWP_PIPER_BIN;
+  delete process.env.MWP_PIPER_DIR;
 });
 
 afterAll(() => {
@@ -101,7 +153,17 @@ function get(id: string, range?: string): Promise<Response> {
 }
 
 function renderCalls() {
-  return hoisted.sayCalls.filter((c) => c.args[0] !== "-v");
+  return hoisted.sayCalls.filter((c) => c.file === "say" && c.args[0] !== "-v");
+}
+
+function piperCalls() {
+  return hoisted.sayCalls.filter((c) => path.basename(c.file) === "piper");
+}
+
+function sayRenderCalls() {
+  return hoisted.sayCalls.filter(
+    (c) => c.file === "say" && c.args[0] !== "-v",
+  );
 }
 
 // --- pure pieces ---
@@ -197,6 +259,14 @@ function fakeDeps(files: Record<string, string> = {}): FakeVoiceDeps {
   const execCalls: { file: string; args: string[] }[] = [];
   const exec = vi.fn(async (file: string, args: string[]) => {
     execCalls.push({ file, args });
+    if (path.basename(file) === "piper") {
+      files[path.basename(args[args.indexOf("-f") + 1] as string)] = "rendered";
+      return { stdout: "", stderr: "" };
+    }
+    if (path.basename(file) === "afconvert") {
+      files[path.basename(args[args.length - 1] as string)] = "rendered";
+      return { stdout: "", stderr: "" };
+    }
     expect(file).toBe("say");
     if (args[0] === "-v" && args[1] === "?") {
       return { stdout: hoisted.listing || STUDIO_LISTING, stderr: "" };
@@ -217,6 +287,9 @@ function fakeDeps(files: Record<string, string> = {}): FakeVoiceDeps {
       delete files[path.basename(p)];
     },
     mkdir: () => {},
+    writeFile: (p: string, data: string) => {
+      files[path.basename(p)] = data;
+    },
   };
 }
 
@@ -260,6 +333,90 @@ it("prune drops only voice files older than 24h", () => {
   });
   pruneVoiceFiles("/ignored", deps);
   expect(deps.readdir("/").sort()).toEqual(["fresh.m4a", "notes.txt"]);
+});
+
+// --- piper engine (override "piper:<model>") ---
+
+it("piperOverride parses the piper: override and ignores everything else", () => {
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  expect(piperOverride()).toBe("en_US-amy-medium");
+  process.env.MWP_VOICE_OVERRIDE = "piper:";
+  expect(piperOverride()).toBe(null);
+  process.env.MWP_VOICE_OVERRIDE = "Samantha";
+  expect(piperOverride()).toBe(null);
+  process.env.MWP_VOICE_OVERRIDE = "";
+  expect(piperOverride()).toBe(null);
+});
+
+it("piperAvailable requires the binary, the .onnx AND the .onnx.json", () => {
+  process.env.MWP_PIPER_BIN = "/x/bin/piper";
+  process.env.MWP_PIPER_DIR = "/x/models";
+  const mk = (names: string[]): VoiceDeps =>
+    fakeDeps(Object.fromEntries(names.map((n) => [n, "x"])));
+  expect(
+    piperAvailable(
+      "en_US-amy-medium",
+      mk(["piper", "en_US-amy-medium.onnx", "en_US-amy-medium.onnx.json"]),
+    ),
+  ).toBe(true);
+  expect(
+    piperAvailable("en_US-amy-medium", mk(["piper", "en_US-amy-medium.onnx"])),
+  ).toBe(false);
+  expect(
+    piperAvailable(
+      "en_US-amy-medium",
+      mk(["en_US-amy-medium.onnx", "en_US-amy-medium.onnx.json"]),
+    ),
+  ).toBe(false);
+});
+
+it("renders through piper when the override asks — model args, temp input file, afconvert, hash distinct from say", async () => {
+  process.env.MWP_PIPER_BIN = "/x/bin/piper";
+  process.env.MWP_PIPER_DIR = "/x/models";
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  const deps = fakeDeps({
+    piper: "bin",
+    "en_US-amy-medium.onnx": "model",
+    "en_US-amy-medium.onnx.json": "conf",
+  });
+  const { renderVoiceFile } = await import("@/lib/voice-render");
+  const res = await renderVoiceFile("Neural hello.", deps);
+  expect(res.cached).toBe(false);
+  expect(res.voice).toBe("piper:en_US-amy-medium");
+
+  const piperCall = deps.execCalls.find(
+    (c) => path.basename(c.file) === "piper",
+  );
+  expect(piperCall?.args[0]).toBe("-m");
+  expect(piperCall?.args[1]).toBe("/x/models/en_US-amy-medium.onnx");
+  const wav = piperCall?.args[piperCall.args.indexOf("-f") + 1] as string;
+  expect(wav.endsWith(".wav")).toBe(true);
+  // the text traveled via a temp input file (not argv) and was cleaned up
+  const txt = piperCall?.args[piperCall.args.indexOf("-i") + 1] as string;
+  expect(deps.readdir(path.dirname(txt))).not.toContain(path.basename(txt));
+
+  const af = deps.execCalls.find((c) => c.file === "afconvert");
+  expect(af?.args).toContain("m4af");
+  expect(af?.args.at(-1)).toBe(res.file);
+
+  // say never ran, and the piper cache identity differs from say's
+  expect(deps.execCalls.some((c) => c.file === "say" && c.args[0] === "-o")).toBe(
+    false,
+  );
+  expect(res.hash).not.toBe(voiceFileHash("Neural hello.", null));
+});
+
+it("a missing piper model means the say lane takes over (injected deps)", async () => {
+  process.env.MWP_PIPER_BIN = "/x/bin/piper";
+  process.env.MWP_PIPER_DIR = "/x/models";
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  const deps = fakeDeps({
+    piper: "bin", // model files absent — override flipped before install
+  });
+  const { renderVoiceFile } = await import("@/lib/voice-render");
+  const res = await renderVoiceFile("Still speaks.", deps);
+  expect(res.voice).toBe("Samantha (English (US))"); // STUDIO_LISTING pick
+  expect(deps.execCalls.some((c) => c.file === "piper")).toBe(false);
 });
 
 // --- the routes (mocked child_process + real fs in the scratch dir) ---
@@ -312,6 +469,82 @@ it("POST render rejects malformed bodies and reports a failed say visibly", asyn
   const fail = await post({ text: "This render will fail." });
   expect(fail.status).toBe(500);
   expect(((await fail.json()) as { error: string }).error).toContain("say");
+});
+
+// --- the routes, piper engine (override "piper:<model>") ---
+
+it("POST render uses piper when the override selects it — voice, url, cache hit skips piper", async () => {
+  installFakePiper();
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+
+  const res1 = await post({ text: "Neural reply one." });
+  expect(res1.status).toBe(200);
+  const body1 = await res1.json();
+  expect(body1.voice).toBe("piper:en_US-amy-medium");
+  expect(body1.url).toMatch(/^\/api\/cockpit\/voice\/audio\?id=[a-f0-9]{64}\.m4a$/);
+  const id = body1.url.split("id=")[1] as string;
+  expect(fs.readFileSync(path.join(voiceDir, id)).toString()).toBe("fake-aac-bytes");
+
+  expect(piperCalls()).toHaveLength(1);
+  expect(piperCalls()[0]?.args[0]).toBe("-m");
+  expect(piperCalls()[0]?.args[1]).toBe(path.join(piperDir, "en_US-amy-medium.onnx"));
+  // only the .m4a remains — temp txt/wav are cleaned up after the render
+  expect(fs.readdirSync(voiceDir)).toEqual([id]);
+  expect(sayRenderCalls()).toHaveLength(0); // say never touched
+
+  const res2 = await post({ text: "Neural reply one." });
+  expect(((await res2.json()) as { cached: boolean }).cached).toBe(true);
+  expect(piperCalls()).toHaveLength(1); // cache hit — piper never ran again
+});
+
+it("a piper failure mid-render falls back to say with a warning — the note still lands", async () => {
+  installFakePiper();
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  hoisted.failPiper = true;
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const res = await post({ text: "Fallback render." });
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.voice).toBe("Samantha (English (US))");
+  expect(fs.existsSync(path.join(voiceDir, body.url.split("id=")[1]))).toBe(true);
+  expect(piperCalls()).toHaveLength(1);
+  expect(sayRenderCalls()).toHaveLength(1);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(String(warn.mock.calls[0]?.[0])).toContain("falling back to say");
+  warn.mockRestore();
+});
+
+it("a missing piper binary/model falls back to say without invoking piper at all", async () => {
+  // env seams point into the scratch tree, but nothing is installed there
+  process.env.MWP_PIPER_BIN = piperBinPath;
+  process.env.MWP_PIPER_DIR = piperDir;
+  fs.mkdirSync(piperDir, { recursive: true });
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const res = await post({ text: "Model missing render." });
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { voice: string }).voice).toBe(
+    "Samantha (English (US))",
+  );
+  expect(piperCalls()).toHaveLength(0);
+  expect(sayRenderCalls()).toHaveLength(1);
+  expect(String(warn.mock.calls[0]?.[0])).toContain("missing");
+  warn.mockRestore();
+});
+
+it("an afconvert failure also falls back to say", async () => {
+  installFakePiper();
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  hoisted.failAfconvert = true;
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const res = await post({ text: "Afconvert failure render." });
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { voice: string }).voice).toBe(
+    "Samantha (English (US))",
+  );
+  expect(piperCalls()).toHaveLength(1); // piper ran, afconvert broke it
+  expect(sayRenderCalls()).toHaveLength(1);
+  warn.mockRestore();
 });
 
 it("GET audio serves bytes with range support and safe ids", async () => {
