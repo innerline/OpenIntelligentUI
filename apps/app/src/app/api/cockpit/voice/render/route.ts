@@ -12,7 +12,7 @@ import { renderVoiceFile } from "@/lib/voice-render";
 // route (the browser already proved that lane).
 //
 //   body: { text: string, sessionHint?: string }
-//   200: { url: "/api/cockpit/voice/audio?id=<hash>.m4a", cached: bool, voice: string|null }
+//   200: { url: "/api/cockpit/voice/audio?id=<hash>.m4a", cached: bool, voice: string|null, speed: number }
 //   400/500: { error }
 //
 // sessionHint is accepted for diagnostics/future session affinity and
@@ -48,12 +48,13 @@ export async function POST(request: Request) {
     );
   }
   try {
-    const { hash, cached, voice } = await renderVoiceFile(text);
+    const { hash, cached, voice, speed } = await renderVoiceFile(text);
     return NextResponse.json(
       {
         url: `/api/cockpit/voice/audio?id=${hash}.m4a`,
         cached,
         voice,
+        speed,
       },
       { headers: { "Cache-Control": "no-store" } },
     );

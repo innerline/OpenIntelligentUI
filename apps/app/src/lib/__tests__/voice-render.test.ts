@@ -82,6 +82,7 @@ import {
   resetVoiceRenderCaches,
   sanitizeVoiceText,
   voiceFileHash,
+  voiceSpeedScale,
   type SayVoice,
   type VoiceDeps,
 } from "@/lib/voice-render";
@@ -108,8 +109,10 @@ function installFakePiper(model = "en_US-amy-medium"): void {
 beforeEach(() => {
   process.env.MWP_VOICE_DIR = voiceDir;
   // pin the override — the machine's real runtime/voice-override.txt
-  // (live owner config, may say "piper:…") must not steer say tests
+  // (live owner config, may say "piper:…" with a speed line) must not
+  // steer say tests
   process.env.MWP_VOICE_OVERRIDE = "";
+  delete process.env.HONEY_VOICE_SPEED; // speed knob starts neutral too
   hoisted.listing = STUDIO_LISTING; // reset per test — no leak
   hoisted.sayCalls.length = 0;
   hoisted.failRenders = false;
@@ -128,6 +131,7 @@ afterEach(() => {
   delete process.env.MWP_VOICE_OVERRIDE;
   delete process.env.MWP_PIPER_BIN;
   delete process.env.MWP_PIPER_DIR;
+  delete process.env.HONEY_VOICE_SPEED;
 });
 
 afterAll(() => {
@@ -241,11 +245,17 @@ it("cap keeps short text whole, cuts long text at a sentence with the tail", () 
   expect(capped).toContain("."); // cut on a sentence, not mid-word
 });
 
-it("the hash is deterministic and sensitive to voice and text", () => {
-  const a = voiceFileHash("hello", "Samantha (English (US))");
-  expect(a).toBe(voiceFileHash("hello", "Samantha (English (US))"));
-  expect(a).not.toBe(voiceFileHash("hello", null));
-  expect(a).not.toBe(voiceFileHash("hello!", "Samantha (English (US))"));
+it("the hash is deterministic and sensitive to voice, text, and speed", () => {
+  const a = voiceFileHash("hello", "Samantha (English (US))", 1);
+  expect(a).toBe(voiceFileHash("hello", "Samantha (English (US))", 1));
+  expect(a).not.toBe(voiceFileHash("hello", null, 1));
+  expect(a).not.toBe(voiceFileHash("hello!", "Samantha (English (US))", 1));
+  // 1x and 1.5x renders of the same text NEVER share a file — the
+  // speed scale is part of the cache identity
+  expect(a).not.toBe(voiceFileHash("hello", "Samantha (English (US))", 0.67));
+  expect(voiceFileHash("hello", null, 0.67)).not.toBe(
+    voiceFileHash("hello", null, 1.5),
+  );
   expect(a).toMatch(/^[a-f0-9]{64}$/);
 });
 
@@ -403,7 +413,7 @@ it("renders through piper when the override asks — model args, temp input file
   expect(deps.execCalls.some((c) => c.file === "say" && c.args[0] === "-o")).toBe(
     false,
   );
-  expect(res.hash).not.toBe(voiceFileHash("Neural hello.", null));
+  expect(res.hash).not.toBe(voiceFileHash("Neural hello.", null, 1));
 });
 
 it("a missing piper model means the say lane takes over (injected deps)", async () => {
@@ -417,6 +427,79 @@ it("a missing piper model means the say lane takes over (injected deps)", async 
   const res = await renderVoiceFile("Still speaks.", deps);
   expect(res.voice).toBe("Samantha (English (US))"); // STUDIO_LISTING pick
   expect(deps.execCalls.some((c) => c.file === "piper")).toBe(false);
+});
+
+// --- speed knob (override line 2 → env HONEY_VOICE_SPEED → 1.0) ---
+
+it("voiceSpeedScale: override line 2 wins, env is next, invalid falls through to 1.0", () => {
+  // line 2 of the override file is the length-scale divisor
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium\n0.67";
+  expect(voiceSpeedScale()).toBe(0.67);
+  process.env.HONEY_VOICE_SPEED = "1.5";
+  expect(voiceSpeedScale()).toBe(0.67); // the file line beats the env
+  process.env.MWP_VOICE_OVERRIDE = "Samantha\n  0.8 "; // padding trims
+  expect(voiceSpeedScale()).toBe(0.8);
+  process.env.MWP_VOICE_OVERRIDE = "Samantha"; // no line 2
+  expect(voiceSpeedScale()).toBe(1.5); // …so the env answers
+  process.env.MWP_VOICE_OVERRIDE = "Samantha\nbanana"; // garbage line 2
+  expect(voiceSpeedScale()).toBe(1.5); // not a match — env still gets its turn
+  process.env.MWP_VOICE_OVERRIDE = "Samantha\n"; // blank line 2, same story
+  expect(voiceSpeedScale()).toBe(1.5);
+  delete process.env.HONEY_VOICE_SPEED;
+  process.env.HONEY_VOICE_SPEED = "0"; // invalid env alone
+  expect(voiceSpeedScale()).toBe(1);
+  process.env.HONEY_VOICE_SPEED = "-2";
+  expect(voiceSpeedScale()).toBe(1);
+  process.env.HONEY_VOICE_SPEED = "3"; // bounds are exclusive
+  expect(voiceSpeedScale()).toBe(1);
+  process.env.HONEY_VOICE_SPEED = "0.2";
+  expect(voiceSpeedScale()).toBe(1);
+  process.env.HONEY_VOICE_SPEED = "2.99"; // just inside
+  expect(voiceSpeedScale()).toBe(2.99);
+  process.env.HONEY_VOICE_SPEED = "0.21";
+  expect(voiceSpeedScale()).toBe(0.21);
+  delete process.env.HONEY_VOICE_SPEED; // missing everywhere
+  expect(voiceSpeedScale()).toBe(1);
+});
+
+it("a say render converts the scale to wpm (0.67 → -r 276); a speed change is a new file", async () => {
+  process.env.MWP_VOICE_OVERRIDE = "Samantha\n0.67";
+  const deps = fakeDeps();
+  const { renderVoiceFile } = await import("@/lib/voice-render");
+  const fast = await renderVoiceFile("Faster please.", deps);
+  expect(fast.speed).toBe(0.67);
+  expect(fast.cached).toBe(false);
+  const args = deps.execCalls.find(
+    (c) => c.file === "say" && c.args[0] === "-o",
+  )?.args as string[];
+  expect(args[args.indexOf("-r") + 1]).toBe("276"); // round(185 / 0.67)
+  // the same text at the default speed is a DIFFERENT render — the
+  // 0.67 file is never reused for a 1x ask (nor the reverse)
+  process.env.MWP_VOICE_OVERRIDE = "Samantha";
+  const normal = await renderVoiceFile("Faster please.", deps);
+  expect(normal.speed).toBe(1);
+  expect(normal.hash).not.toBe(fast.hash);
+  expect(normal.cached).toBe(false);
+});
+
+it("a piper render passes the scale through as --length_scale", async () => {
+  process.env.MWP_PIPER_BIN = "/x/bin/piper";
+  process.env.MWP_PIPER_DIR = "/x/models";
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium\n0.67";
+  const deps = fakeDeps({
+    piper: "bin",
+    "en_US-amy-medium.onnx": "model",
+    "en_US-amy-medium.onnx.json": "conf",
+  });
+  const { renderVoiceFile } = await import("@/lib/voice-render");
+  const res = await renderVoiceFile("Neural, but quicker.", deps);
+  expect(res.speed).toBe(0.67);
+  const piperCall = deps.execCalls.find(
+    (c) => path.basename(c.file) === "piper",
+  );
+  expect(piperCall?.args[piperCall.args.indexOf("--length_scale") + 1]).toBe(
+    "0.67",
+  );
 });
 
 // --- the routes (mocked child_process + real fs in the scratch dir) ---
@@ -545,6 +628,37 @@ it("an afconvert failure also falls back to say", async () => {
   expect(piperCalls()).toHaveLength(1); // piper ran, afconvert broke it
   expect(sayRenderCalls()).toHaveLength(1);
   warn.mockRestore();
+});
+
+it("POST render reports the speed and never reuses a 1x file for a 1.5x ask", async () => {
+  installFakePiper();
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium\n0.67";
+  const res1 = await post({ text: "Speed knob route check." });
+  expect(res1.status).toBe(200);
+  const body1 = await res1.json();
+  expect(body1.speed).toBe(0.67);
+  expect(body1.voice).toBe("piper:en_US-amy-medium");
+  expect(piperCalls()[0]?.args).toContain("--length_scale");
+  expect(piperCalls()[0]?.args[piperCalls()[0].args.indexOf("--length_scale") + 1]).toBe(
+    "0.67",
+  );
+
+  // same text, default speed → different hash, piper renders again
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium";
+  const res2 = await post({ text: "Speed knob route check." });
+  const body2 = await res2.json();
+  expect(body2.speed).toBe(1);
+  expect(body2.cached).toBe(false);
+  expect(body2.url).not.toBe(body1.url);
+  expect(piperCalls()).toHaveLength(2);
+
+  // and back at 0.67 the first answer is a cache hit, not a re-render
+  process.env.MWP_VOICE_OVERRIDE = "piper:en_US-amy-medium\n0.67";
+  const res3 = await post({ text: "Speed knob route check." });
+  const body3 = await res3.json();
+  expect(body3.url).toBe(body1.url);
+  expect(body3.cached).toBe(true);
+  expect(piperCalls()).toHaveLength(2);
 });
 
 it("GET audio serves bytes with range support and safe ids", async () => {

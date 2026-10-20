@@ -17,12 +17,13 @@
 //   POST /api/cockpit/voice/render  → lib renders here, returns a URL
 //   GET  /api/cockpit/voice/audio   → serves the rendered file
 //
-// Caching: the file name is a sha256 of (voice, rate, final text), so
-// identical replies never re-render. The cache identity includes the
-// engine+voice ("piper:en_US-amy-medium" vs a `say` voice name), so
-// piper and say renders never collide. Files older than 24h are
-// pruned on each render (best-effort — a prune failure never fails a
-// render).
+// Caching: the file name is a sha256 of (voice, rate, speed, final
+// text), so identical replies never re-render. The cache identity
+// includes the engine+voice ("piper:en_US-amy-medium" vs a `say`
+// voice name) and the speed scale, so piper/say renders never collide
+// and neither do 1x and 1.5x renders of the same text. Files older
+// than 24h are pruned on each render (best-effort — a prune failure
+// never fails a render).
 
 import { createHash } from "crypto";
 import { execFile } from "child_process";
@@ -60,19 +61,59 @@ const AFCONVERT_TIMEOUT_MS = 10_000;
 // prepended to the preference order at render time — instant voice flips
 // without rebuilds (owner voice-pick mechanism, 2026-10-20). A line of
 // the form "piper:<model>" selects the piper engine instead (see
-// piperOverride). MWP_VOICE_OVERRIDE replaces the file for tests.
-function readVoiceOverride(): string | null {
+// piperOverride). The SECOND line is the speed knob: a piper LENGTH
+// SCALE divisor (0.67 ≈ 1.5x faster, smaller = faster; `say` converts
+// it to wpm: round(VOICE_RATE_WPM / scale)) — the owner's instant
+// speed dial, same no-rebuild posture as the voice line. Speed source,
+// first match wins: override line 2 → env HONEY_VOICE_SPEED → 1.0.
+// MWP_VOICE_OVERRIDE replaces the file for tests.
+function readOverrideLines(): string[] {
   try {
-    if (process.env.MWP_VOICE_OVERRIDE !== undefined) {
-      const v = process.env.MWP_VOICE_OVERRIDE.trim().split("\n")[0];
-      return v || null;
-    }
-    const f = path.join(process.cwd(), "runtime", "voice-override.txt");
-    const v = fs.readFileSync(f, "utf8").trim().split("\n")[0];
-    return v || null;
+    const raw =
+      process.env.MWP_VOICE_OVERRIDE !== undefined
+        ? process.env.MWP_VOICE_OVERRIDE
+        : fs.readFileSync(
+            path.join(process.cwd(), "runtime", "voice-override.txt"),
+            "utf8",
+          );
+    return raw.trim().split("\n");
   } catch {
-    return null;
+    return [];
   }
+}
+
+function readVoiceOverride(): string | null {
+  const v = readOverrideLines()[0];
+  return v?.trim() || null;
+}
+
+// Speed validity window: a length scale strictly between 0.2 and 3.
+// Outside it (garbage, 0, negatives, absurd asks) the candidate is not
+// a match and the next source is tried — a bad line never silences or
+// chipmunks the voice, it just falls back to normal pacing.
+const VOICE_SPEED_SCALE_MIN = 0.2;
+const VOICE_SPEED_SCALE_MAX = 3;
+
+function parseSpeedScale(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n)) return null;
+  if (n <= VOICE_SPEED_SCALE_MIN || n >= VOICE_SPEED_SCALE_MAX) return null;
+  return n;
+}
+
+// The effective length scale for this render (1.0 = natural pacing).
+export function voiceSpeedScale(): number {
+  const fromFile = parseSpeedScale(readOverrideLines()[1]);
+  if (fromFile !== null) return fromFile;
+  const fromEnv = parseSpeedScale(process.env.HONEY_VOICE_SPEED);
+  if (fromEnv !== null) return fromEnv;
+  return 1.0;
+}
+
+// `say` has no scale flag — the scale becomes words per minute.
+function sayRateWpm(scale: number): number {
+  return Math.round(VOICE_RATE_WPM / scale);
 }
 
 export const PREFERRED_SAY_VOICES: readonly string[] = [
@@ -169,11 +210,17 @@ export function capVoiceText(text: string): string {
   return cut + VOICE_CAP_SUFFIX;
 }
 
-// File identity: voice + rate + final text → identical replies share
-// one render regardless of which session asked.
-export function voiceFileHash(text: string, voice: string | null): string {
+// File identity: voice + rate + speed + final text → identical replies
+// share one render regardless of which session asked. The speed scale
+// is part of the identity, so a 0.67 rerender of an already-cached 1.0
+// reply is a NEW file — the two never collide.
+export function voiceFileHash(
+  text: string,
+  voice: string | null,
+  speed: number,
+): string {
   return createHash("sha256")
-    .update(`${voice ?? "default"}\u0000${VOICE_RATE_WPM}\u0000${text}`)
+    .update(`${voice ?? "default"}\u0000${VOICE_RATE_WPM}\u0000${speed}\u0000${text}`)
     .digest("hex");
 }
 
@@ -302,6 +349,7 @@ export interface VoiceRenderResult {
   file: string; // absolute path
   cached: boolean;
   voice: string | null; // engine+voice used: "piper:<model>" or the `say -v` name, null = system default
+  speed: number; // the length scale the render ran at (1.0 = natural)
 }
 
 const inFlight = new Map<string, Promise<VoiceRenderResult>>();
@@ -309,26 +357,28 @@ const inFlight = new Map<string, Promise<VoiceRenderResult>>();
 // One render through the shared hash-cache machinery: reuse an
 // existing file, dedupe concurrent identical renders (in-flight
 // map), prune, and let `speak` do the engine-specific work of
-// producing <file> (.m4a).
+// producing <file> (.m4a). The speed scale rides the hash, so the
+// cache is speed-aware end to end.
 async function renderVia(
   identity: string | null,
   final: string,
+  speed: number,
   deps: VoiceDeps,
   speak: (file: string) => Promise<void>,
 ): Promise<VoiceRenderResult> {
-  const hash = voiceFileHash(final, identity);
+  const hash = voiceFileHash(final, identity, speed);
   const dir = voiceDir();
   const file = path.join(dir, `${hash}.m4a`);
   const running = inFlight.get(hash);
   if (running) return running;
   const job = (async (): Promise<VoiceRenderResult> => {
     if (deps.exists(file)) {
-      return { hash, file, cached: true, voice: identity };
+      return { hash, file, cached: true, voice: identity, speed };
     }
     deps.mkdir(dir);
     await speak(file);
     pruneVoiceFiles(dir, deps);
-    return { hash, file, cached: false, voice: identity };
+    return { hash, file, cached: false, voice: identity, speed };
   })()
     .catch((e: unknown) => {
       throw e instanceof Error ? e : new Error(String(e));
@@ -343,12 +393,15 @@ async function renderVia(
 // Piper speaks `final` into <file>.m4a: text → temp .txt (the CLI
 // takes a file, not an argv string), piper → temp .wav, afconvert →
 // the .m4a the audio route serves (AAC ~5x smaller than the wav;
-// same container every say render already uses). Temps are cleaned
-// up best-effort — a stray temp never fails the render.
+// same container every say render already uses). The speed knob is
+// piper's native --length_scale (divisor: 0.67 ≈ 1.5x faster).
+// Temps are cleaned up best-effort — a stray temp never fails the
+// render.
 async function piperSpeak(
   model: string,
   final: string,
   file: string,
+  speed: number,
   deps: VoiceDeps,
 ): Promise<void> {
   const dir = path.dirname(file);
@@ -359,7 +412,7 @@ async function piperSpeak(
   try {
     await deps.exec(
       piperBin(),
-      ["-m", onnx, "-i", txt, "-f", wav],
+      ["-m", onnx, "-i", txt, "-f", wav, "--length_scale", String(speed)],
       { timeout: PIPER_TIMEOUT_MS },
     );
     await deps.exec(
@@ -381,21 +434,24 @@ async function piperSpeak(
 // when the hash matches. The piper engine is chosen by the runtime
 // override ("piper:<model>"); when piper is unavailable or fails
 // mid-render the say lane takes over with a warning — the owner
-// always gets a voice note. Identical concurrent requests share a
-// single render (the in-flight map).
+// always gets a voice note. The speed scale (override line 2 → env
+// HONEY_VOICE_SPEED → 1.0) applies to BOTH engines and rides the
+// cache identity. Identical concurrent requests share a single
+// render (the in-flight map).
 export async function renderVoiceFile(
   text: string,
   deps: VoiceDeps = realVoiceDeps,
 ): Promise<VoiceRenderResult> {
   const final = capVoiceText(sanitizeVoiceText(text));
   if (!final) throw new Error("nothing to speak");
+  const speed = voiceSpeedScale();
 
   const model = piperOverride();
   if (model) {
     if (piperAvailable(model, deps)) {
       try {
-        return await renderVia(`piper:${model}`, final, deps, (file) =>
-          piperSpeak(model, final, file, deps),
+        return await renderVia(`piper:${model}`, final, speed, deps, (file) =>
+          piperSpeak(model, final, file, speed, deps),
         );
       } catch (e) {
         console.warn(
@@ -411,14 +467,14 @@ export async function renderVoiceFile(
 
   const voices = await listSayVoices(deps);
   const voice = pickSayVoice(voices);
-  return renderVia(voice, final, deps, (file) =>
+  return renderVia(voice, final, speed, deps, (file) =>
     deps.exec(
       "say",
       [
         "-o",
         file,
         "-r",
-        String(VOICE_RATE_WPM),
+        String(sayRateWpm(speed)),
         ...(voice ? ["-v", voice] : []),
         "--data-format=aac", // ~3x smaller than say's default ALAC
         final,
