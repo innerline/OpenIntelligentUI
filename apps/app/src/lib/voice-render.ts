@@ -39,6 +39,22 @@ const SAY_TIMEOUT_MS = 30_000;
 // "Ava (English (US))" too; premium variants win over plain ones).
 // No match → the system default voice (no -v flag) — never a novelty
 // voice (Bells, Bad News, …).
+// Runtime override: first line of apps/app/runtime/voice-override.txt is
+// prepended to the preference order at render time — instant voice flips
+// without rebuilds (owner voice-pick mechanism, 2026-10-20).
+function readVoiceOverride(): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("fs") as typeof import("fs");
+    const path = require("path") as typeof import("path");
+    const f = path.join(process.cwd(), "runtime", "voice-override.txt");
+    const v = fs.readFileSync(f, "utf8").trim().split("\n")[0];
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
 export const PREFERRED_SAY_VOICES: readonly string[] = [
   "Ava (Premium)",
   "Samantha (Premium)",
@@ -79,6 +95,17 @@ function voiceKey(name: string): { base: string; premium: boolean } {
 // English locales are eligible — Honey's replies are English.
 export function pickSayVoice(voices: readonly SayVoice[]): string | null {
   const en = voices.filter((v) => v.locale.toLowerCase().startsWith("en"));
+  const override = readVoiceOverride();
+  if (override) {
+    const want = voiceKey(override);
+    const hit = en.find((v) => {
+      const have = voiceKey(v.name);
+      return have.base === want.base && have.premium === want.premium;
+    });
+    if (hit) return hit.name;
+    // Override names a voice that isn't installed — fall through to defaults
+    // rather than refusing to speak.
+  }
   for (const preferred of PREFERRED_SAY_VOICES) {
     const want = voiceKey(preferred);
     const hit = en.find((v) => {
@@ -126,7 +153,7 @@ export function capVoiceText(text: string): string {
 // one render regardless of which session asked.
 export function voiceFileHash(text: string, voice: string | null): string {
   return createHash("sha256")
-    .update(`${voice ?? "default"}\0${VOICE_RATE_WPM}\0${text}`)
+    .update(`${voice ?? "default"}\u0000${VOICE_RATE_WPM}\u0000${text}`)
     .digest("hex");
 }
 
