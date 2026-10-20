@@ -21,11 +21,16 @@ import {
 // contract): mode logic, markdown stripping, the ~700-char cap, the
 // ≤200-char sentence chunking iOS needs, and the speech controller's
 // guarantees (off never speaks, new speech replaces old, cancel stops
-// and reports idle).
+// and reports idle). The iOS gesture primer speaks at 0.01 gain — a
+// volume-0 primer pins the audio session at zero gain and later
+// utterances play SILENT — and cancels itself once done; real
+// utterances always set volume = 1 explicitly.
 
 class FakeUtterance {
   text: string;
-  volume = 1;
+  // tripwire default: a queued utterance that never set its volume
+  // explicitly fails the volume assertions below
+  volume = 0;
   onend: (() => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(text: string) {
@@ -242,8 +247,10 @@ it("a reply over the cap still speaks only the capped head", () => {
 
 // --- the iOS gesture unlock ---
 
-it("unlockSpeech primes once with an inaudible utterance, and never in off mode", () => {
-  const { spoken } = installFakeSynth();
+// One test owns the whole primer lifecycle: speechUnlocked is module
+// state, so a second test could never prime again.
+it("primes once at 0.01 gain, resets the session after, never in off mode, never cuts a live reply", () => {
+  const { spoken, isCancelled } = installFakeSynth();
   setTtsMode("off");
   unlockSpeech(); // off mode never speaks, not even the primer
   expect(spoken.length).toBe(0);
@@ -251,5 +258,28 @@ it("unlockSpeech primes once with an inaudible utterance, and never in off mode"
   unlockSpeech(); // first allowed tap primes
   unlockSpeech(); // later taps: no-op
   expect(spoken.length).toBe(1);
-  expect(spoken[0]!.volume).toBe(0);
+  expect(spoken[0]!.volume).toBe(0.01); // nonzero gain — 0 pins iOS at silence
+  expect(isCancelled()).toBe(0); // not cancelled while the primer is in flight
+  // a reply that queues while the primer is still finishing owns the
+  // session — the primer's trailing cancel must not cut into it
+  const states: boolean[] = [];
+  const unsubscribe = subscribeSpeaking((active) => states.push(active));
+  speakReply("A reply racing the primer.");
+  const afterReplyStart = isCancelled(); // the reply's own start-cancel
+  spoken[0]!.onend?.(); // primer completes AFTER the reply queued
+  expect(isCancelled()).toBe(afterReplyStart); // its session reset is suppressed
+  expect(states.at(-1)).toBe(true); // the reply is still speaking
+  unsubscribe();
+  cancelSpeech(); // release the reply — primer is spent either way
+  spoken[0]!.onend?.(); // primer end with nothing live → resets the session
+  expect(isCancelled()).toBe(afterReplyStart + 2); // reply cancel + primer reset
+  spoken[0]!.onerror?.(); // an errored primer resets too, and never throws
+  expect(isCancelled()).toBe(afterReplyStart + 3);
+});
+
+it("real utterances always carry explicit full volume, never inherited gain", () => {
+  const { spoken } = installFakeSynth();
+  speakReply("One sentence here. Another one follows it.");
+  expect(spoken.length).toBeGreaterThan(0);
+  for (const u of spoken) expect(u.volume).toBe(1);
 });

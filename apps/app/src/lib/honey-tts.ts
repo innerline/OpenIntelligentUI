@@ -15,8 +15,13 @@
 // iOS Safari quirks this module owns:
 //   1. speechSynthesis refuses to speak unless speak() ran once inside
 //      a user gesture — unlockSpeech() is called from a pointerdown
-//      (the send-button tap counts) and primes it with an inaudible
-//      utterance.
+//      (the send-button tap counts) and primes it with a near-silent
+//      utterance. The primer must NOT be volume 0: iOS pins the audio
+//      session at the primer's gain, so a zero-gain primer leaves
+//      every later utterance SILENT while speechSynthesis.speaking
+//      still reports true (owner phone, 2026-10-20). It primes at
+//      0.01 — inaudible but nonzero — and cancels itself once done to
+//      reset the session; every real utterance sets volume = 1.
 //   2. long utterances stall mid-speech on iOS — replies are chunked
 //      into sentence-boundary pieces of ≤ SPEECH_CHUNK_CHARS and queued;
 //      short utterances chain through the browser's native queue.
@@ -191,19 +196,22 @@ function getSynth(): SpeechSynthesis | null {
 }
 
 // Speak one reply: clean → cap → chunk → queue. Mode off never speaks
-// (the guard lives here so every entry path inherits it). New speech
+// (the guard lives here so every entry path inherits it). The session
+// is reset (cancel) before every reply — iOS audio sessions can carry
+// stale gain/queue state, so nothing is inherited — and new speech
 // replaces whatever is still playing.
 export function speakReply(raw: string): void {
+  cancelSpeech(); // unconditional reply-start reset of the audio session
   if (getTtsMode() === "off") return;
   const synth = getSynth();
   if (!synth || typeof SpeechSynthesisUtterance === "undefined") return;
   const text = capForSpeech(cleanForSpeech(raw));
   if (!text) return;
-  cancelSpeech();
   const chunks = chunkForSpeech(text);
   let queued = false;
   chunks.forEach((chunk, i) => {
     const utterance = new SpeechSynthesisUtterance(chunk);
+    utterance.volume = 1; // explicit — never inherit the primer's 0.01
     if (i === chunks.length - 1) {
       utterance.onend = () => setSpeaking(false);
       utterance.onerror = () => setSpeaking(false);
@@ -242,8 +250,14 @@ export function maybeAutoSpeak(raw: string, device: OwnerDevice): void {
 
 // iOS quirk 1: speechSynthesis ignores speak() until it has been
 // called once inside a user gesture. engine-chat wires this to a
-// captured pointerdown (the send-button tap counts) — an inaudible
-// volume-0 primer unlocks the engine for the session.
+// captured pointerdown (the send-button tap counts) — a near-silent
+// 0.01-volume primer unlocks the engine for the session. A volume-0
+// primer is NOT silent-but-safe on iOS: the audio session keeps the
+// primer's zero gain and later utterances play mute — so the primer
+// carries nonzero gain, and once it completes (or errors) it cancels
+// itself to hand back a clean audio session. That trailing cancel
+// skips a reply that started speaking in the same breath (manual
+// mode's play button races the primer).
 let speechUnlocked = false;
 
 export function unlockSpeech(): void {
@@ -252,7 +266,17 @@ export function unlockSpeech(): void {
   if (!synth || typeof SpeechSynthesisUtterance === "undefined") return;
   try {
     const primer = new SpeechSynthesisUtterance(" ");
-    primer.volume = 0;
+    primer.volume = 0.01; // inaudible, but nonzero gain for the session
+    const resetSession = () => {
+      if (speakingNow) return; // a live reply owns the session now
+      try {
+        synth.cancel();
+      } catch {
+        // some engines throw on cancel with nothing queued
+      }
+    };
+    primer.onend = resetSession;
+    primer.onerror = resetSession;
     synth.speak(primer);
     speechUnlocked = true;
   } catch {
