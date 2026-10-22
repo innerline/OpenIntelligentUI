@@ -337,6 +337,38 @@ it("publishes the run's visual pointer to the sidebar slot", async () => {
   window.history.replaceState({}, "", "/");
 });
 
+it("publishes the run's plex pointer — the sidebar's k-plex lane", async () => {
+  window.history.replaceState({}, "", "/cockpit/honey?q=show%20me%20the%20note%20in%20k-plex");
+  // Honey's k-plex notes (owner directive 2026-10-22): the reply ends
+  // with VISUAL: plex=<path>; the adapter parks {kind:"plex"} on
+  // RUN_FINISHED and the sidebar renders the walk + links the
+  // click-through to the K-Plex walk view of that note.
+  const { fn } = mockFetch(null, {}, {
+    kind: "plex",
+    path: "K-Plex/Mind Map.md",
+  }, "Standing on the Mind Map.");
+  vi.stubGlobal("fetch", fn);
+
+  const seen: { agent?: string; visual?: unknown }[] = [];
+  const onVisual = (e: Event) => {
+    seen.push((e as CustomEvent<{ agent?: string; visual?: unknown }>).detail);
+  };
+  window.addEventListener("cockpit-visual", onVisual);
+  chat();
+
+  await waitFor(() =>
+    expect(window.localStorage.getItem(SLOT_KEY)).toBe(
+      JSON.stringify({ kind: "plex", path: "K-Plex/Mind Map.md" }),
+    ),
+  );
+  expect(seen.at(-1)).toEqual({
+    agent: "honey",
+    visual: { kind: "plex", path: "K-Plex/Mind Map.md" },
+  });
+  window.removeEventListener("cockpit-visual", onVisual);
+  window.history.replaceState({}, "", "/");
+});
+
 it("clears the slot when the run points at nothing", async () => {
   window.localStorage.setItem(
     SLOT_KEY,

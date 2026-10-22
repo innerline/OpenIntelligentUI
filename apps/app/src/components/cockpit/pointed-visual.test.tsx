@@ -59,6 +59,18 @@ it("renders a pointed plex through the same lane", async () => {
   expect(frame.getAttribute("src")).toBe(
     "/api/cockpit/honeyui/?plex=K-Plex%2FMind%20Map.md",
   );
+
+  // click-through (owner directive 2026-10-22): a plex item opens the
+  // K-Plex walk view of that exact note, full page, new tab — the
+  // same-origin proxied honeyui render (?plex=<note path>, auth
+  // inlined server-side). Same URL as the embed, target _blank.
+  const open = screen.getByTestId("pointed-open") as HTMLAnchorElement;
+  expect(open.getAttribute("href")).toBe(
+    "/api/cockpit/honeyui/?plex=K-Plex%2FMind%20Map.md",
+  );
+  expect(open.getAttribute("href")).toBe(frame.getAttribute("src"));
+  expect(open.getAttribute("target")).toBe("_blank");
+  expect(open.getAttribute("rel")).toBe("noopener");
 });
 
 it("previews a pointed file via the keyed reader and clicks through to /vault", async () => {
