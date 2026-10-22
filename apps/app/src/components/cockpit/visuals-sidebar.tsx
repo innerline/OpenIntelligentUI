@@ -4,6 +4,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { PlexPanel } from "@/components/kplex/plex-panel";
 import { PointedVisual } from "@/components/cockpit/pointed-visual";
+import { BoardPanel } from "@/components/cockpit/board-panel";
 import { doorUrl } from "@/lib/vault-links";
 import "./cockpit.css";
 
@@ -23,6 +24,11 @@ import "./cockpit.css";
 // pointed at renders above the walk; the owner clicks through to the
 // full view. Per-persona: the slot follows whichever chat surface is on
 // stage.
+//
+// 2026-10-22 kanban-restructure S3: the CURRENT kanban board renders
+// here too — unfinished cards grouped by status (BoardPanel), between
+// the pointing surface and the walk, read-only with one click-through
+// per card (the honeyui file reader, new tab).
 
 const STORAGE_KEY = "cockpit:visuals-open";
 
@@ -206,6 +212,7 @@ export function VisualsSidebar() {
           </button>
         </div>
         <PointedVisual agent={pathname.includes("/larry") ? "larry" : "honey"} />
+        <BoardPanel />
         <div className="sidebar-plex">
           <PlexPanel variant="stage" />
         </div>

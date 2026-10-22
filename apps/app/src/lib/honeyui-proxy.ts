@@ -22,6 +22,13 @@ export function honeyuiPageUrl(kind: "map" | "plex", path: string): string {
   return `${HONEYUI_PREFIX}/?${kind}=${encodeURIComponent(path)}`;
 }
 
+// The keyed reader page for a vault note — the sidebar board's one
+// click-through (kanban-restructure S3): same-origin proxied, token
+// inlined server-side, full page in a new tab.
+export function honeyuiFileUrl(path: string): string {
+  return `${HONEYUI_PREFIX}/?file=${encodeURIComponent(path)}`;
+}
+
 export function rewriteHoneyuiHtml(html: string): string {
   // index.html references /app.js?v=…, /manifest.webmanifest, /icon-…:
   // root-absolute href/src only — prefix them all.

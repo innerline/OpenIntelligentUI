@@ -111,6 +111,104 @@ export function listKanbanCards(
   return cards.sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated));
 }
 
+// --- cockpit sidebar board (kanban-restructure S3, 2026-10-22) ---
+//
+// The sidebar board shows the CURRENT kanban: unfinished cards only —
+// done/cancelled are finished and leave it (they ride kanban/archive/
+// after the 30-day law). A card qualifies by carrying a status that
+// READS like one — a single lowercase word, the shared vocabulary's
+// shape — which keeps generated views out (HONEY_QUEUE.md carries a
+// whole sentence in `status:`) without hardcoding filenames. Statuses
+// beyond the STATUSES.md vocabulary (`doing`, `blocked` — real cards on
+// today's board) are kept, grouped after the vocabulary columns: never
+// dropped, never relabeled — the sidebar shows what IS.
+
+// Statuses that mean the work is finished — off the current board.
+export const FINISHED_STATUSES = new Set(["done", "cancelled"]);
+
+export type BoardGroup = { status: string; note: string; cards: KanbanCard[] };
+
+const STATUS_WORD = /^[a-z][a-z-]*$/;
+
+export function isUnfinishedStatus(status: string): boolean {
+  return STATUS_WORD.test(status) && !FINISHED_STATUSES.has(status);
+}
+
+// Flat walk of a kanban dir — TOP-LEVEL .md files only, so
+// kanban/archive/** never appears (archived cards live in subfolders).
+// Same walk shape and KanbanCard mapping as listKanbanCards, but gated
+// on isUnfinishedStatus instead of the vocabulary: off-vocabulary
+// statuses stay on the board.
+export function listUnfinishedKanbanCards(
+  dir: string,
+  { prefix }: { prefix: string },
+): KanbanCard[] {
+  const cards: KanbanCard[] = [];
+  let files: fs.Dirent[];
+  try {
+    files = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return cards;
+  }
+  for (const ent of files) {
+    if (!ent.isFile() || !ent.name.endsWith(".md")) continue;
+    const full = path.join(dir, ent.name);
+    let text = "";
+    try {
+      text = fs.readFileSync(full, "utf8");
+    } catch {
+      continue;
+    }
+    const fm = parseFrontmatter(text);
+    if (!isUnfinishedStatus(fm.status || "")) continue;
+    cards.push({
+      file: ent.name,
+      path: `${prefix}/${ent.name}`,
+      title: fm.title || titleOf(text, ent.name.replace(/\.md$/, "")),
+      status: fm.status,
+      owner: fm.owner || null,
+      tags: parseTags(fm.tags),
+      updated: new Date(fs.statSync(full).mtimeMs).toISOString(),
+    });
+  }
+  return cards.sort((a, b) => Date.parse(b.updated) - Date.parse(a.updated));
+}
+
+const byUpdatedDesc = (a: KanbanCard, b: KanbanCard) =>
+  Date.parse(b.updated) - Date.parse(a.updated);
+
+// Group cards for compact sidebar display: the STATUSES.md columns
+// first, in vocabulary order (finished columns skipped), then any
+// on-card statuses the vocabulary doesn't cover, alphabetical — the
+// board is what the cards say, not what the table says. Empty groups
+// are skipped; cards within a group sort newest-first.
+export function groupBoardCards(
+  columns: KanbanColumn[],
+  cards: KanbanCard[],
+): BoardGroup[] {
+  const byStatus = new Map<string, KanbanCard[]>();
+  for (const c of cards) {
+    // defensive: finished cards never board the sidebar, even if a
+    // caller passes an unfiltered list
+    if (FINISHED_STATUSES.has(c.status)) continue;
+    const list = byStatus.get(c.status);
+    if (list) list.push(c);
+    else byStatus.set(c.status, [c]);
+  }
+  const groups: BoardGroup[] = [];
+  const covered = new Set<string>();
+  for (const col of columns) {
+    if (FINISHED_STATUSES.has(col.key)) continue;
+    covered.add(col.key);
+    const list = byStatus.get(col.key);
+    if (list?.length) groups.push({ status: col.key, note: col.note, cards: [...list].sort(byUpdatedDesc) });
+  }
+  for (const s of [...byStatus.keys()].filter((s) => !covered.has(s)).sort()) {
+    groups.push({ status: s, note: "", cards: [...byStatus.get(s)!].sort(byUpdatedDesc) });
+  }
+  return groups;
+}
+
 // Larry's myPKA task files (Personal vault `Team Knowledge/tasks/`).
 // Lifecycle is the folder (protocol table in Personal Kanban/PROTOCOL.md):
 // open/ → triage, in-progress/ → active (waiting when blocked_reason is
