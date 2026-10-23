@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { PlexPanel } from "@/components/kplex/plex-panel";
 import { PointedVisual } from "@/components/cockpit/pointed-visual";
 import { BoardPanel } from "@/components/cockpit/board-panel";
+import { PulsePanel } from "@/components/cockpit/pulse-panel";
 import { doorUrl } from "@/lib/vault-links";
 import "./cockpit.css";
 
@@ -29,6 +30,12 @@ import "./cockpit.css";
 // here too — unfinished cards grouped by status (BoardPanel), between
 // the pointing surface and the walk, read-only with one click-through
 // per card (the honeyui file reader, new tab).
+//
+// 2026-10-23 THE REDO J07: the k-plex dashboard's stage-04 content
+// lands in this viewer — the platform pulse (PulsePanel) under the
+// board: what moved lately, one row per shipped run, receipts
+// tappable. The dashboard is now a view OF the cockpit, same-origin;
+// the old :8135 tab shell is not iframed for this.
 
 const STORAGE_KEY = "cockpit:visuals-open";
 
@@ -213,6 +220,7 @@ export function VisualsSidebar() {
         </div>
         <PointedVisual agent={pathname.includes("/larry") ? "larry" : "honey"} />
         <BoardPanel />
+        <PulsePanel />
         <div className="sidebar-plex">
           <PlexPanel variant="stage" />
         </div>

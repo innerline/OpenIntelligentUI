@@ -59,8 +59,10 @@
   --radius-xl:  16px;
   --radius-2xl: 24px;
 
-  /* Typography */
-  --font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  /* Typography — self-hosted via next/font (J08): the variable resolves
+   * to the bundled family; the literal name stays as the hand-off for
+   * any context the variable hasn't reached, then system stacks. */
+  --font-family: var(--font-jakarta), 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
 
   /* Component-level surfaces */
   --surface-primary:         #fff;

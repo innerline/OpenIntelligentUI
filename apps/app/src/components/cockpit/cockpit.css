@@ -599,6 +599,90 @@ html.dark .cockpit-app {
   flex-shrink: 0;
 }
 
+/* --- platform pulse (THE REDO J07, 2026-10-23) — the k-plex dashboard's
+ * stage-04 content in this viewer: newest-first run rows, event/seat
+ * chips, tappable receipts. Mirrors the board's capped-scroll shell so
+ * the two dashboard sections read as one column. */
+.sidebar-pulse {
+  flex: 0 1 auto;
+  max-height: 34%;
+  min-height: 56px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ck-border);
+  border-radius: 12px;
+  background: var(--surface-primary);
+}
+
+.sidebar-pulse ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-pulse li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.pulse-chips {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.pulse-chip {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--ck-border);
+  opacity: 0.8;
+}
+
+.pulse-event[data-event="gate"],
+.pulse-event[data-event="incident"] {
+  border-color: var(--ck-warn);
+  color: var(--ck-warn);
+  opacity: 1;
+}
+
+.pulse-date {
+  font-size: 10.5px;
+  opacity: 0.6;
+}
+
+.pulse-title {
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.pulse-title:hover { text-decoration: underline; }
+
+.pulse-body {
+  margin: 0;
+  font-size: 11.5px;
+  opacity: 0.65;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 
 /* the plex grammar, scaled from sidebar strip to the docked stage */
 .cockpit-visuals-sidebar .plex-panel { font-size: 13.5px; gap: 12px; }
