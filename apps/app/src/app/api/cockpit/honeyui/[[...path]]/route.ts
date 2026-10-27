@@ -21,16 +21,12 @@ import { rewriteHoneyuiHtml, rewriteHoneyuiJs } from "@/lib/honeyui-proxy";
 
 export const dynamic = "force-dynamic";
 
-// honeyui binds the tailnet IP only (server.py HOST default
-// 100.81.213.106 — the phone lane needs it there), never loopback, so
-// 127.0.0.1 502'd live: the sidebar's map/plex embeds and their
-// click-throughs all landed on "honeyui unreachable". Default to the
-// stable twin instance on the tailnet (the 8135 port is the
-// register-retired legacy door; both serve the same static build,
-// verified byte-identical 2026-10-22). Server-side hop only — the owner
-// still only ever sees the :3210 same-origin URL.
+// honeyui is loopback-only since the 2026-10-27 owner-path delete
+// (its tailnet listener is gone — the cockpit is the owner surface,
+// and this proxy is honeyui's only consumer now). Server-side hop;
+// the owner still only ever sees the :3210 same-origin URL.
 const HONEYUI_URL =
-  process.env.HONEYUI_URL || "http://100.81.213.106:8136";
+  process.env.HONEYUI_URL || "http://127.0.0.1:8136";
 const STACK_TOKEN_FILE =
   process.env.MWP_STACK_TOKEN_FILE ||
   "/Users/silverhawk/GitHub/agentic-stack/runtime/token";

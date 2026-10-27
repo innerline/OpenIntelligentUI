@@ -234,7 +234,7 @@ export function BoardsView() {
               <a
                 key={i}
                 className={`dash-item k-${a.kind}`}
-                href={fileUrl(a.cardPath || "kanban/OWNER-ACTIONS.md")}
+                href={doorUrl(a.cardPath || "kanban/OWNER-ACTIONS.md")}
                 target="_blank"
                 rel="noopener"
                 title={a.cardPath || "kanban/OWNER-ACTIONS.md"}
