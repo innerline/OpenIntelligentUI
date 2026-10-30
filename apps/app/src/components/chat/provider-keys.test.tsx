@@ -6,13 +6,13 @@ import { ProviderKeysProvider, useProviderKeys } from "./provider-keys";
 import { ProviderKeysDialog } from "./provider-keys-dialog";
 
 function Harness({ disabled = false }: { disabled?: boolean }) {
-  const { hasKeys, session, headers, newChat } = useProviderKeys();
+  const { hasOwnKeys, session, headers, newChat } = useProviderKeys();
   const [open, setOpen] = useState(false);
   return <>
     <button onClick={() => setOpen(true)}>Open keys</button>
     <button onClick={newChat}>New chat</button>
     <output data-testid="session">{session}</output>
-    <output data-testid="active">{hasKeys ? headers?.["x-openai-api-key"] : "shared"}</output>
+    <output data-testid="active">{hasOwnKeys ? headers?.["x-openai-api-key"] : "shared"}</output>
     {open && <ProviderKeysDialog disabled={disabled} onClose={() => setOpen(false)} />}
   </>;
 }
@@ -32,11 +32,23 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("memory-only provider keys", () => {
+  it("never demands keys to start — the dialog is optional BYOK, and the demanding copy is retired", () => {
+    // Vendor routing retired 2026-10-29 (suite cockpit wiring P2): the
+    // default chat surface answers on the server's model; this pins the
+    // retirement at the dialog layer.
+    setup();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveAccessibleName("API keys (optional)");
+    expect(dialog).toHaveTextContent("Chat works without them");
+    expect(dialog).not.toHaveTextContent("required to start");
+    expect(screen.queryByText("Add API keys to start")).not.toBeInTheDocument();
+  });
+
   it("validates trimmed headers before saving, resets the chat and never persists keys", async () => {
     const storage = vi.spyOn(Storage.prototype, "setItem");
     const cookie = vi.spyOn(document, "cookie", "set");
     setup();
-    expect(screen.getByRole("dialog")).toHaveAccessibleName("Add API keys to start");
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("API keys (optional)");
     expect(screen.getByLabelText("OpenAI API key")).toHaveAttribute("type", "password");
     expect(screen.getByRole("button", { name: "Save keys" })).toBeDisabled();
     enterKeys();

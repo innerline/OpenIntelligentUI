@@ -68,6 +68,15 @@ def request_model(fallback):
     from src.credentials import current_credentials
     credentials = current_credentials.get()
     if credentials is None:
+        # Flat default lane (suite cockpit wiring P2, 2026-10-29): an
+        # unresolved CredentialScopedModel wraps another chat model, and
+        # astream_events reports on_chat_model_stream from BOTH nested
+        # runs — every text chunk and tool-call delta dispatched twice
+        # (the same double-emit DedupToolCallAgent guards at the AG-UI
+        # layer). Resolve the wrapper to the plain env-configured model
+        # so the default lane emits exactly one event per chunk.
+        if isinstance(fallback, CredentialScopedModel):
+            return fallback.fallback
         return fallback
     from langchain_openai import ChatOpenAI
     from openai import AsyncOpenAI, OpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient

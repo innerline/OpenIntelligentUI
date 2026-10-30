@@ -133,7 +133,10 @@ function RuntimeReady() {
   );
 }
 
-it("submits through the real chat-only page composer and preserves its message", async () => {
+// Vendor routing retired 2026-10-29 (suite cockpit wiring P2): the
+// composer submits straight through — the runtime's default agent
+// answers server-side, no browser keys demanded at any point.
+it("submits through the real chat-only page composer without any key gate", async () => {
   const runInputs = mockRuntime();
   render(
     <Providers>
@@ -151,17 +154,9 @@ it("submits through the real chat-only page composer and preserves its message",
     key: "Enter",
     code: "Enter",
   });
-  expect(await screen.findByRole("dialog", { name: "Add API keys to start" })).toBeVisible();
-  expect(runInputs).toHaveLength(0);
-  fireEvent.change(screen.getByLabelText("OpenAI API key"), { target: { value: "test-openai" } });
-  fireEvent.change(screen.getByLabelText("Jev API key"), { target: { value: "test-jev" } });
-  fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
-  await screen.findByText("Both keys work. Save to start a new chat.");
-  fireEvent.click(screen.getByRole("button", { name: "Save keys" }));
-  await waitFor(() => expect(screen.getByTestId("runtime-status")).toHaveTextContent("connected"));
-  expect(screen.getByRole("textbox")).toHaveValue("Explain bicycle gears");
-  expect(runInputs).toHaveLength(0);
-  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", code: "Enter" });
   await waitFor(() => expect(runInputs).toHaveLength(1));
+  // No key dialog ever opened; the composer cleared and the message rendered.
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toHaveValue("");
   expect(await screen.findByText("Explain bicycle gears")).toBeVisible();
 });

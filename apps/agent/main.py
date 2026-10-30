@@ -25,6 +25,7 @@ from src.credentials import (
 )
 from src.visualization_router import JevVisualizationMiddleware
 from src.skill_backend import SKILL_SOURCES, build_agent_backend
+from src.mcp_tools import load_mcp_tools_sync
 from src.query import query_data
 from src.todos import AgentState, todo_tools
 from src.form import generate_form
@@ -34,9 +35,23 @@ from src.prompt import SYSTEM_PROMPT
 
 load_dotenv()
 
+# Server-side MCP lane (open-mcp-client pattern, owner-only cockpit):
+# MCP servers live in mcp-servers.json (env-overridable via
+# MCP_SERVERS_CONFIG); tokens are read from the named env at startup —
+# never from the browser, never in this repo. Unreachable servers are
+# skipped (see src/mcp_tools.py), so a down MCP server never blocks boot.
+mcp_tools = load_mcp_tools_sync()
+
 agent = create_deep_agent(
     model=CredentialScopedModel(fallback=build_model(allow_unconfigured=True)),
-    tools=[query_data, get_trip_stop_images, plan_visualization, *todo_tools, generate_form],
+    tools=[
+        query_data,
+        get_trip_stop_images,
+        plan_visualization,
+        *todo_tools,
+        generate_form,
+        *mcp_tools,
+    ],
     middleware=[
         RequestModelMiddleware(),
         CopilotKitMiddleware(),

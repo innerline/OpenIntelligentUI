@@ -1,0 +1,10 @@
+{
+  "servers": [
+    {
+      "name": "buzz",
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:8128/mcp",
+      "tokenEnv": "BUZZ_MCP_TOKEN"
+    }
+  ]
+}

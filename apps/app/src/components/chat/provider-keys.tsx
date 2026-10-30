@@ -5,7 +5,7 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 export type ProviderKeys = { openai: string; jev: string };
 type ProviderKeysContextValue = {
   headers: Record<string, string> | undefined;
-  hasKeys: boolean;
+  hasOwnKeys: boolean;
   session: number;
   save: (keys: ProviderKeys) => void;
   clear: () => void;
@@ -18,10 +18,10 @@ type ProviderKeysContextValue = {
 const ProviderKeysContext = createContext<ProviderKeysContextValue | null>(null);
 
 export function ProviderKeysProvider({ children }: { children: ReactNode }) {
-  // Deployment mode: NEXT_PUBLIC_SERVER_KEYS=1 — the server holds shared
-  // provider keys (agent .env); visitors never enter keys. Headers stay
-  // undefined so the app server uses its own credentials.
-  const SERVER_KEYS = process.env.NEXT_PUBLIC_SERVER_KEYS === "1";
+  // Vendor routing retired 2026-10-29 (suite cockpit wiring P2): the
+  // runtime's default agent answers server-side through the platform's
+  // GLM lane — no browser-supplied keys are ever required to chat.
+  // Own keys remain an optional per-session override (BYOK compat).
   // Deliberately memory-only: never put credentials in browser storage or agent state.
   const [keys, setKeys] = useState<ProviderKeys | null>(null);
   const [session, setSession] = useState(0);
@@ -31,7 +31,7 @@ export function ProviderKeysProvider({ children }: { children: ReactNode }) {
   return (
     <ProviderKeysContext.Provider value={{
       headers: keys ? { "x-openai-api-key": keys.openai, "x-jev-api-key": keys.jev } : undefined,
-      hasKeys: SERVER_KEYS || keys !== null,
+      hasOwnKeys: keys !== null,
       session,
       save: (value) => { setKeys(value); setKeysOpen(false); setSession((value) => value + 1); },
       clear: () => { setKeys(null); newChat(); },

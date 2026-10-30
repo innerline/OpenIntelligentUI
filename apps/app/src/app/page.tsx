@@ -19,7 +19,7 @@ export default function HomePage() {
   useGenerativeUIExamples();
   useExampleSuggestions();
   const { agent } = useAgent();
-  const { newChat, hasKeys, keysOpen, setKeysOpen } = useProviderKeys();
+  const { newChat, hasOwnKeys, keysOpen, setKeysOpen } = useProviderKeys();
   const { copilotkit } = useCopilotKit();
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -89,7 +89,7 @@ export default function HomePage() {
             New chat
           </button>
           <button type="button" onClick={() => setKeysOpen(true)} disabled={agent.isRunning || retrying} aria-haspopup="dialog">
-            API keys{hasKeys ? " •" : ""}
+            API keys{hasOwnKeys ? " •" : ""}
           </button>
           <a
             href="https://github.com/CopilotKit/OpenIntelligentUI"
@@ -143,8 +143,10 @@ export default function HomePage() {
             labels={{
               welcomeMessageText: "What would you like to explore?",
               chatInputPlaceholder: "Ask anything…",
-              chatDisclaimerText:
-                hasKeys ? "AI can make mistakes. Check important details." : "Add your OpenAI and Jev API keys to start. Keys clear when you refresh.",
+              // Vendor routing retired 2026-10-29: the default lane answers
+              // server-side (GLM through the runtime's default agent) — the
+              // disclaimer no longer demands browser-supplied provider keys.
+              chatDisclaimerText: "AI can make mistakes. Check important details.",
             }}
           />
         </div>

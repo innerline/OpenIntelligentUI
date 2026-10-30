@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import type { ComponentProps } from "react";
 import type { CopilotChatView } from "@copilotkit/react-core/v2";
-import { ProviderKeysProvider, useProviderKeys } from "./provider-keys";
+import { ProviderKeysProvider } from "./provider-keys";
 import { KeyGatedChatView } from "./key-gated-chat-view";
 
 vi.mock("@copilotkit/react-core/v2", () => ({
@@ -16,44 +16,24 @@ vi.mock("@copilotkit/react-core/v2", () => ({
 const submit = vi.fn();
 const select = vi.fn();
 function Harness() {
-  const { session, keysOpen, setKeysOpen, save, newChat } = useProviderKeys();
-  return <>
-    <KeyGatedChatView key={session} onSubmitMessage={submit} onSelectSuggestion={select} />
-    {keysOpen && <div role="dialog">
-      <button onClick={() => setKeysOpen(false)}>Cancel</button>
-      <button onClick={() => save({ openai: "test", jev: "test" })}>Save tested keys</button>
-    </div>}
-    <button onClick={newChat}>New chat</button>
-  </>;
+  return <KeyGatedChatView onSubmitMessage={submit} onSelectSuggestion={select} />;
 }
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-it("opens setup before sending and preserves the message across cancel and the key-save remount", () => {
+// Vendor routing retired 2026-10-29 (suite cockpit wiring P2): the key
+// gate is gone — submission flows straight through to the default agent
+// (the server's GLM lane) with no browser-supplied keys at any point.
+it("sends immediately without keys — no gate, no dialog, draft clears", () => {
   render(<ProviderKeysProvider><Harness /></ProviderKeysProvider>);
   fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Show a map" } });
-  fireEvent.click(screen.getByText("Send"));
-  expect(submit).not.toHaveBeenCalled();
-  expect(screen.getByRole("dialog")).toBeInTheDocument();
-  fireEvent.click(screen.getByText("Cancel"));
-  expect(screen.getByLabelText("Message")).toHaveValue("Show a map");
-  fireEvent.click(screen.getByText("Send"));
-  fireEvent.click(screen.getByText("Save tested keys"));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(screen.getByLabelText("Message")).toHaveValue("Show a map");
-  expect(submit).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText("Send"));
   expect(submit).toHaveBeenCalledExactlyOnceWith("Show a map");
   expect(screen.getByLabelText("Message")).toHaveValue("");
 });
 
-it("gates example prompts and clears the preserved draft when starting a new chat", () => {
+it("example prompts submit without keys and clear the draft", () => {
   render(<ProviderKeysProvider><Harness /></ProviderKeysProvider>);
   fireEvent.click(screen.getByText("Example"));
-  expect(select).not.toHaveBeenCalled();
-  expect(screen.getByLabelText("Message")).toHaveValue("Explain flight");
-  fireEvent.click(screen.getByText("Save tested keys"));
-  fireEvent.click(screen.getByText("New chat"));
-  expect(screen.getByLabelText("Message")).toHaveValue("");
-  fireEvent.click(screen.getByText("Example"));
   expect(select).toHaveBeenCalledOnce();
+  expect(screen.getByLabelText("Message")).toHaveValue("");
 });

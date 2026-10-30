@@ -4,28 +4,22 @@ import { CopilotChatView } from "@copilotkit/react-core/v2";
 import type { ComponentProps } from "react";
 import { useProviderKeys } from "./provider-keys";
 
-/** Gate submission before CopilotKit adds a message or starts a provider request. */
+/** Draft holder for the chat view. The key gate was retired 2026-10-29
+ * (suite cockpit wiring P2): the runtime's default agent answers
+ * server-side on the GLM lane, so submission is never held for
+ * browser-supplied provider keys. Own keys stay optional via the
+ * API-keys dialog (BYOK compat). */
 function KeyGatedChatViewComponent(props: ComponentProps<typeof CopilotChatView>) {
-  const { hasKeys, draft, setDraft, setKeysOpen } = useProviderKeys();
+  const { draft, setDraft } = useProviderKeys();
   return <CopilotChatView
     {...props}
     inputValue={draft}
     onInputChange={setDraft}
     onSubmitMessage={(value) => {
-      if (!hasKeys) {
-        setDraft(value);
-        setKeysOpen(true);
-        return;
-      }
       setDraft("");
       props.onSubmitMessage?.(value);
     }}
     onSelectSuggestion={(suggestion, index) => {
-      if (!hasKeys) {
-        setDraft(suggestion.message);
-        setKeysOpen(true);
-        return;
-      }
       setDraft("");
       props.onSelectSuggestion?.(suggestion, index);
     }}
